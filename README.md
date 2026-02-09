@@ -1,10 +1,9 @@
-# 🚀 Claw-Log
-
 <p align="center">
   <img src="https://github.com/user-attachments/assets/53c127d0-a66b-47da-afe0-70560046f595" alt="Claw-Log Banner" width="600" />
   <br>
 
 </p>
+
 
 > **"오늘의 기록이 내일의 이력서가 됩니다."**
 
