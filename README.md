@@ -58,6 +58,8 @@ claw-log --projects-show     # 현재 등록된 프로젝트 목록 조회
 claw-log --schedule 23:30    # 매일 자동 실행 스케줄 등록/변경
 claw-log --schedule-show     # 현재 스케줄 조회
 claw-log --schedule-remove   # 스케줄 삭제
+claw-log --serve              # 로컬 웹 대시보드 (기본 포트: 8080)
+claw-log --serve 3000         # 커스텀 포트로 대시보드 실행
 ```
 
 ---
