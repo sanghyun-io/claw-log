@@ -10,6 +10,8 @@ from html import escape
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
+# NOTE: main.py에서 lazy import로 server를 호출하므로 circular import 없음.
+# _read_env_data/ENV_PATH를 별도 config 모듈로 분리하면 더 안전함. (TODO)
 from claw_log.main import _read_env_data, ENV_PATH
 from claw_log.storage import read_recent_logs
 from claw_log.scheduler import get_schedule_summary
@@ -284,7 +286,7 @@ def _render_html(data):
 
 <div class="card">
   <h2>⏰ 스케줄</h2>
-  <span class="schedule-badge {'schedule-active' if '매일' in schedule else 'schedule-inactive'}">
+  <span class="schedule-badge {'schedule-inactive' if '\u26a0\ufe0f' in schedule else 'schedule-active'}">
     {escape(schedule)}
   </span>
 </div>
@@ -294,7 +296,7 @@ def _render_html(data):
   {logs_html}
 </div>
 
-<footer>Claw-Log v0.1.3 &bull; localhost 전용 &bull; F5로 새로고침</footer>
+<footer>Claw-Log &bull; localhost 전용 &bull; F5로 새로고침</footer>
 </body>
 </html>"""
 
@@ -335,7 +337,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 def serve_dashboard(port=8080):
     """로컬 대시보드 서버를 시작합니다."""
-    server = HTTPServer(("localhost", port), DashboardHandler)
+    try:
+        server = HTTPServer(("localhost", port), DashboardHandler)
+    except OSError:
+        print(f"\n❌ 포트 {port}이 이미 사용 중입니다.")
+        print(f"   다른 포트를 지정하세요: claw-log --serve {port + 1}")
+        return
     url = f"http://localhost:{port}"
 
     print(f"\n🦞 Claw-Log 대시보드 서버 시작")
