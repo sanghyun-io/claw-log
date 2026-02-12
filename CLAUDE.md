@@ -35,6 +35,10 @@ claw-log --schedule-remove   # 스케줄 삭제
 claw-log --log               # 최근 5개 엔트리 출력
 claw-log --log 20            # 최근 20개 엔트리 출력
 
+# 대시보드
+claw-log --serve              # 로컬 웹 대시보드 (기본 포트: 8080)
+claw-log --serve 3000         # 커스텀 포트로 대시보드 실행
+
 # 패키지 빌드
 python -m build
 ```
@@ -55,7 +59,9 @@ main.py (CLI 진입점, 위자드, Git diff 수집)
     │
     ├── scheduler.py (OS별 스케줄링: Windows schtasks / Unix crontab)
     │
-    └── storage.py (career_logs.md에 결과 prepend)
+    ├── storage.py (career_logs.md에 결과 prepend)
+    │
+    └── server.py (로컬 웹 대시보드: http.server 기반 읽기 전용)
 ```
 
 **데이터 플로우**: CLI 실행 → Git 저장소 탐색 → diff 추출 → AI 요약 → career_logs.md에 저장
