@@ -108,7 +108,7 @@ AI 특유의 과장된 표현을 배제하고, 실제 개발 과정에서의 의
 명령어를 찾을 수 없거나 라이브러리 충돌이 발생하나요? 최신 Python 버전 환경에서 기존 패키지 잔재가 남아있을 때 생기는 문제입니다. 아래 명령어로 깨끗하게 재설치하세요.
 
 ```bash
-pipx install claw-log --force --no-cache-dir
+pipx install git+https://github.com/sanghyun-io/claw-log.git --force --no-cache-dir
 ```
 
 ---
