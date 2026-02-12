@@ -24,7 +24,6 @@ AUTH_URL = "https://auth.openai.com/oauth/authorize"
 TOKEN_URL = "https://auth.openai.com/oauth/token"
 REDIRECT_URI = "http://localhost:1455/auth/callback"
 CALLBACK_PORT = 1455
-AUDIENCE = "https://api.openai.com/v1"
 SCOPE = "openid profile email offline_access"
 
 # 토큰 저장 경로
@@ -190,16 +189,17 @@ def run_oauth_login() -> dict | None:
     verifier, challenge = _generate_pkce()
     state = _generate_state()
     
-    # 인증 URL 구성
+    # 인증 URL 구성 (Codex CLI 공식 플로우와 동일)
     auth_params = {
         "client_id": CLIENT_ID,
         "redirect_uri": REDIRECT_URI,
         "response_type": "code",
         "scope": SCOPE,
-        "audience": AUDIENCE,
         "state": state,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
+        "id_token_add_organizations": "true",
+        "codex_cli_simplified_flow": "true",
     }
     auth_url = f"{AUTH_URL}?{urlencode(auth_params)}"
     
