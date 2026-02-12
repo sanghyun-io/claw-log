@@ -7,7 +7,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from claw_log.engine import GeminiSummarizer, OpenAISummarizer, CodexOAuthSummarizer
-from claw_log.storage import prepend_to_log_file
+from claw_log.storage import prepend_to_log_file, read_recent_logs
 from claw_log.scheduler import install_schedule, show_schedule, remove_schedule
 
 # .env 파일은 현재 작업 디렉토리(CWD)에서 찾습니다.
@@ -422,9 +422,20 @@ def main():
     parser.add_argument("--schedule-remove", action="store_true", help="스케줄 삭제")
     parser.add_argument("--projects", action="store_true", help="프로젝트 관리 (추가/선택/해제)")
     parser.add_argument("--projects-show", action="store_true", help="현재 프로젝트 목록 조회")
+    parser.add_argument("--log", nargs="?", const=5, type=int, metavar="N", help="최근 N개 로그 조회 (기본: 5)")
     args = parser.parse_args()
 
     # 0. 즉시 실행 명령어 (설정 불필요)
+    if args.log is not None:
+        entries, error = read_recent_logs(n=args.log)
+        if error:
+            print(f"⚠️ {error}")
+        else:
+            print(f"\n📋 최근 {len(entries)}개 기록\n")
+            for entry in entries:
+                print(entry)
+                print("\n" + "─" * 50 + "\n")
+        return
     if args.schedule_show:
         show_schedule()
         return
