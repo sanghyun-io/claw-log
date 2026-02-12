@@ -7,7 +7,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from claw_log.engine import GeminiSummarizer, OpenAISummarizer, CodexOAuthSummarizer
-from claw_log.storage import prepend_to_log_file
+from claw_log.storage import prepend_to_log_file, read_recent_logs
 from claw_log.scheduler import install_schedule, show_schedule, remove_schedule, get_schedule_summary
 
 # .env 파일은 현재 작업 디렉토리(CWD)에서 찾습니다.
@@ -522,6 +522,7 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="API 호출 없이 수집될 diff 미리보기")
     parser.add_argument("--engine", action="store_true", help="AI 엔진/모델 변경 (프로젝트·스케줄 유지)")
     parser.add_argument("--days", type=int, default=0, metavar="N", help="과거 N일치 커밋 요약 (예: --days 7)")
+    parser.add_argument("--log", nargs="?", const=5, type=int, metavar="N", help="최근 N개 로그 조회 (기본: 5)")
     args = parser.parse_args()
 
     # 0. 즉시 실행 명령어 (설정 불필요)
@@ -530,6 +531,16 @@ def main():
         return
     if args.engine:
         change_engine()
+        return
+    if args.log is not None:
+        entries, error = read_recent_logs(n=args.log)
+        if error:
+            print(f"⚠️ {error}")
+        else:
+            print(f"\n📋 최근 {len(entries)}개 기록\n")
+            for entry in entries:
+                print(entry)
+                print("\n" + "─" * 50 + "\n")
         return
     if args.schedule_show:
         show_schedule()
