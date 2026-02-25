@@ -16,6 +16,10 @@ from claw_log.engine import GeminiSummarizer, OpenAISummarizer, CodexOAuthSummar
 from claw_log.storage import prepend_to_log_file, read_recent_logs, LOG_FILENAME
 from claw_log.scheduler import install_schedule, show_schedule, remove_schedule, get_schedule_summary
 from claw_log.state import load_state, save_state, get_last_hash, acquire_run_lock, release_run_lock
+from claw_log.git_collector import (
+    get_repo_key, get_latest_commit_hash, collect_project_commits,
+    CommitData, ProjectCommits, PER_COMMIT_DIFF_LIMIT,
+)
 
 # .env 파일은 현재 작업 디렉토리(CWD)에서 찾습니다.
 ENV_PATH = Path(os.getcwd()) / ".env"
@@ -459,155 +463,194 @@ def run_wizard():
         print("   ⏭️  자동 기록 스케줄을 건너뜁니다.")
 
 
-# ── Git Diff 수집 ──
+# ── 배칭 파이프라인 ──
 
-def _get_repo_key(path):
-    """R2-#1: repo_root + ref_name으로 고유 키 생성 (브랜치별 독립 추적)."""
-    try:
-        repo_root = subprocess.check_output(
-            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
-            stderr=subprocess.STDOUT
-        ).decode("utf-8").strip()
-    except subprocess.CalledProcessError:
-        repo_root = str(Path(path).resolve())
-    try:
-        ref_name = subprocess.check_output(
-            ["git", "-C", str(path), "symbolic-ref", "HEAD"],
-            stderr=subprocess.STDOUT
-        ).decode("utf-8").strip()
-    except subprocess.CalledProcessError:
-        ref_name = "detached"
-    return f"{repo_root}::{ref_name}"
+BATCH_CHAR_LIMIT = 50_000
 
 
-def _is_valid_ancestor(path, commit_hash):
-    """커밋이 현재 HEAD의 ancestor인지 확인 (rebase/amend 감지)."""
-    try:
-        obj_type = subprocess.check_output(
-            ["git", "-C", str(path), "cat-file", "-t", commit_hash],
-            stderr=subprocess.STDOUT
-        ).decode("utf-8").strip()
-        if obj_type != "commit":
-            return False
-        result = subprocess.run(
-            ["git", "-C", str(path), "merge-base", "--is-ancestor", commit_hash, "HEAD"],
-            capture_output=True
-        )
-        return result.returncode == 0
-    except subprocess.CalledProcessError:
-        return False
-
-
-def _get_latest_commit_hash(path):
-    """현재 HEAD의 커밋 해시를 반환."""
-    try:
-        return subprocess.check_output(
-            ["git", "-C", str(path), "rev-parse", "HEAD"],
-            stderr=subprocess.STDOUT
-        ).decode("utf-8").strip()
-    except subprocess.CalledProcessError:
-        return None
-
-
-def _count_commits_in_range(path, from_hash, to_ref="HEAD"):
-    """R2-#5: 두 지점 사이의 커밋 수를 반환. 실패 시 -1."""
-    try:
-        count_str = subprocess.check_output(
-            ["git", "-C", str(path), "rev-list", "--count", f"{from_hash}..{to_ref}"],
-            stderr=subprocess.STDOUT
-        ).decode("utf-8").strip()
-        return int(count_str)
-    except (subprocess.CalledProcessError, ValueError):
-        return -1
-
-
-def get_git_diff_for_path(path_str, days=0, last_hash=None):
-    """Git diff를 수집합니다. days=0이면 오늘만, days>0이면 과거 N일치.
+def format_commit_for_batch(commit, project_name):
+    """커밋 데이터를 배치 텍스트 블록으로 포맷.
 
     Args:
-        path_str: Git 저장소 경로
-        days: 과거 N일치 수집 (0이면 오늘 또는 last_hash 이후)
-        last_hash: 마지막 처리된 커밋 해시 (None이면 날짜 기반 fallback)
+        commit: CommitData 인스턴스
+        project_name: 프로젝트 이름
 
     Returns:
-        (diff_str, truncated, commit_count) 3-tuple.
-        diff_str: 수집된 diff 문자열 (없으면 None)
-        truncated: 15,000자 초과 여부
-        commit_count: 수집 범위의 총 커밋 수 (-1은 fallback 모드)
+        포맷된 문자열
     """
-    path = Path(path_str).resolve()
+    short_hash = commit.hash[:8]
+    parts = [f"--- [{project_name}] commit {short_hash} ---"]
+    if commit.stat:
+        parts.append(f"[STAT]\n{commit.stat}")
+    if commit.diff:
+        parts.append(f"[DIFF]\n{commit.diff}")
+    return "\n".join(parts) + "\n"
 
-    if not path.exists():
-        print(f"   경로를 찾을 수 없습니다: {path}")
-        print("   폴더 주소가 정확한지 확인해주세요.")
-        return (None, False, 0)
 
-    if not (path / ".git").exists():
-        print(f"   Git 저장소가 아닙니다 (건너뜀): {path}")
-        print("   해당 폴더에 .git 디렉토리가 있는지 확인해주세요.")
-        return (None, False, 0)
+def format_uncommitted_for_batch(stat, diff, project_name):
+    """미커밋 변경사항을 배치 텍스트 블록으로 포맷.
 
-    exclude_patterns = [
-        ":(exclude)package-lock.json", ":(exclude)yarn.lock", ":(exclude)pnpm-lock.yaml",
-        ":(exclude)*.map", ":(exclude)dist/", ":(exclude)build/",
-        ":(exclude)node_modules/", ":(exclude).next/", ":(exclude).git/", ":(exclude).DS_Store"
-    ]
+    Args:
+        stat: git diff --stat 출력
+        diff: git diff 출력
+        project_name: 프로젝트 이름
 
-    max_count_args = ["--max-count=50"]
-    commit_count = 0
+    Returns:
+        포맷된 문자열
+    """
+    parts = [f"--- [{project_name}] uncommitted changes ---"]
+    if stat:
+        parts.append(f"[STAT]\n{stat}")
+    if diff:
+        parts.append(f"[DIFF]\n{diff}")
+    return "\n".join(parts) + "\n"
 
-    try:
-        combined_result = ""
-        since_date = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        if days > 0:
-            since_date -= datetime.timedelta(days=days)
 
-        # 1. 커밋 로그 수집 (분기)
-        period_label = f"Past {days} Days" if days > 0 else "Today"
-        try:
-            if last_hash and _is_valid_ancestor(path, last_hash):
-                # R2-#5: 총 커밋 수 확인 후 max-count 제한으로 수집
-                total_in_range = _count_commits_in_range(path, last_hash)
-                cmd_log = (
-                    ["git", "-C", str(path), "log", f"{last_hash}..HEAD"]
-                    + max_count_args + ["-p", "--", "."] + exclude_patterns
-                )
-                commit_count = total_in_range
-            elif last_hash:
-                # R2-#3: 무효 해시 → commit count 기반 복구 (최근 100개)
-                cmd_log = (
-                    ["git", "-C", str(path), "log", "-n", "100", "-p", "--", "."]
-                    + exclude_patterns
-                )
-                p_name = Path(path_str).name
-                print(f"  [{p_name}] 저장된 커밋 해시가 유효하지 않아 최근 커밋을 스캔합니다.")
-                commit_count = -1  # fallback 모드
-            else:
-                cmd_log = (
-                    ["git", "-C", str(path), "log", f"--since={since_date.isoformat()}"]
-                    + max_count_args + ["-p", "--", "."] + exclude_patterns
-                )
+def _flush_batch(batch_text, batch_commits, summarizer, days, batch_idx):
+    """배치를 AI에 전송하고 결과를 반환.
 
-            log_output = subprocess.check_output(cmd_log, stderr=subprocess.STDOUT).decode("utf-8")
-            if log_output.strip():
-                combined_result += f"=== [Past Commits ({period_label})] ===\n" + log_output + "\n\n"
-        except subprocess.CalledProcessError:
-            pass
+    Args:
+        batch_text: AI에 전송할 텍스트
+        batch_commits: 이 배치에 포함된 (repo_key, commit_hash) 튜플 리스트
+        summarizer: AI 요약 엔진
+        days: --days 값
+        batch_idx: 배치 번호 (로깅용)
 
-        # 2. 미커밋 변경사항
-        try:
-            cmd_diff = ["git", "-C", str(path), "diff", "HEAD", "--", "."] + exclude_patterns
-            diff_output = subprocess.check_output(cmd_diff, stderr=subprocess.STDOUT).decode("utf-8")
-            if diff_output.strip():
-                combined_result += "=== [Uncommitted Current Work] ===\n" + diff_output + "\n"
-        except subprocess.CalledProcessError:
-            pass
+    Returns:
+        (success, summary_text) 튜플
+    """
+    batch_label = f"배치 #{batch_idx + 1}"
+    print(f"  {batch_label} AI 요약 생성 중... ({len(batch_text):,}자)")
+    summary = summarizer.summarize(batch_text)
 
-        truncated = len(combined_result) > 15000
-        return (combined_result if combined_result.strip() else None, truncated, commit_count)
+    if not summary or summary.startswith(("Gemini 요약 생성 실패", "OpenAI 요약 생성 실패")):
+        print(f"  {batch_label} 요약 실패: {summary}")
+        return (False, "")
 
-    except Exception:
-        return (None, False, 0)
+    # 점진적 상태 저장 (days==0일 때만)
+    if days == 0 and batch_commits:
+        pending = {}
+        for repo_key, commit_hash in batch_commits:
+            pending[repo_key] = commit_hash  # 같은 repo_key의 마지막 해시가 남음
+        if pending:
+            save_state(pending)
+
+    return (True, summary)
+
+
+def run_batched_summarization(target_paths, summarizer, days):
+    """배칭 파이프라인으로 모든 프로젝트를 처리.
+
+    Args:
+        target_paths: 프로젝트 경로 리스트
+        summarizer: AI 요약 엔진
+        days: --days 값
+
+    Returns:
+        성공 시 True, 실패 시 False
+    """
+    state = load_state()
+
+    # 1. 모든 프로젝트의 커밋 데이터 수집
+    all_projects = []
+    for repo_path_str in target_paths:
+        repo_key = get_repo_key(repo_path_str)
+        last_hash = get_last_hash(state, repo_key) if days == 0 else None
+        pc = collect_project_commits(repo_path_str, repo_key, last_hash=last_hash, days=days)
+        all_projects.append(pc)
+
+        p_name = pc.project_name
+        n_commits = len(pc.commits)
+        has_uncommitted = pc.uncommitted_diff is not None
+        if n_commits > 0 or has_uncommitted:
+            parts = []
+            if n_commits > 0:
+                parts.append(f"커밋 {n_commits}개")
+            if has_uncommitted:
+                parts.append("미커밋 변경")
+            print(f"  [{p_name}] {', '.join(parts)} 수집 완료")
+        elif Path(repo_path_str).exists():
+            no_change = f"최근 {days}일 변경사항 없음" if days > 0 else "오늘 변경사항 없음"
+            print(f"  [{p_name}] {no_change}")
+
+    # 2. 배치 구성 및 AI 호출
+    batch_text = ""
+    batch_commits = []  # (repo_key, last_hash_in_batch) 추적용
+    all_summaries = []
+    batch_idx = 0
+    has_any_data = False
+
+    for pc in all_projects:
+        # 커밋 처리
+        for commit in pc.commits:
+            has_any_data = True
+            chunk = format_commit_for_batch(commit, pc.project_name)
+
+            # 배치 한도 초과 시 flush
+            if batch_text and len(batch_text) + len(chunk) > BATCH_CHAR_LIMIT:
+                ok, summary = _flush_batch(batch_text, batch_commits, summarizer, days, batch_idx)
+                if not ok:
+                    if all_summaries:
+                        _save_all_summaries(all_summaries, days)
+                    return False
+                all_summaries.append(summary)
+                batch_text = ""
+                batch_commits = []
+                batch_idx += 1
+
+            batch_text += chunk
+            batch_commits.append((pc.repo_key, commit.hash))
+
+        # 미커밋 변경사항 처리
+        if pc.uncommitted_diff:
+            has_any_data = True
+            chunk = format_uncommitted_for_batch(pc.uncommitted_stat, pc.uncommitted_diff, pc.project_name)
+
+            if batch_text and len(batch_text) + len(chunk) > BATCH_CHAR_LIMIT:
+                ok, summary = _flush_batch(batch_text, batch_commits, summarizer, days, batch_idx)
+                if not ok:
+                    if all_summaries:
+                        _save_all_summaries(all_summaries, days)
+                    return False
+                all_summaries.append(summary)
+                batch_text = ""
+                batch_commits = []
+                batch_idx += 1
+
+            batch_text += chunk
+
+    if not has_any_data:
+        print("변경사항이 발견되지 않았습니다. (종료)")
+        return False
+
+    # 마지막 배치 flush
+    if batch_text:
+        ok, summary = _flush_batch(batch_text, batch_commits, summarizer, days, batch_idx)
+        if not ok:
+            if all_summaries:
+                _save_all_summaries(all_summaries, days)
+            return False
+        all_summaries.append(summary)
+
+    # 3. 모든 요약을 합쳐서 로그에 저장
+    if all_summaries:
+        _save_all_summaries(all_summaries, days)
+        combined = "\n\n".join(all_summaries)
+        print(f"\n" + "=" * 60 + f"\n{combined}\n" + "=" * 60)
+
+    return True
+
+
+def _save_all_summaries(summaries, days):
+    """모든 배치 요약을 합쳐서 로그 파일에 1회 저장."""
+    combined = "\n\n".join(summaries)
+    if days > 0:
+        start_date = (datetime.date.today() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+        end_date = datetime.date.today().strftime("%Y-%m-%d")
+        saved_file = prepend_to_log_file(combined, date_label=f"{start_date} ~ {end_date}")
+    else:
+        saved_file = prepend_to_log_file(combined)
+    print(f"\n기록 완료: {saved_file}")
 
 
 # ── 업데이트 확인 ──
@@ -763,40 +806,71 @@ def main():
             return
 
         target_paths = [p.strip() for p in paths_env.split(",") if p.strip()]
+        days = args.days
         print(f"\n🔍 Claw-Log Dry Run — {len(target_paths)}개 프로젝트 스캔")
+        if days > 0:
+            print(f"   (과거 {days}일치 모드)")
         print("=" * 50)
 
-        total_chars = 0
-        collected = 0
         dry_state = load_state()
+        total_chars = 0
+        total_commits = 0
+        collected = 0
+
+        # 배치 시뮬레이션용
+        simulated_batch_size = 0
+        estimated_batches = 1
+
         for repo_path_str in target_paths:
             p_name = Path(repo_path_str).name
-            repo_key = _get_repo_key(repo_path_str)
-            last_hash = get_last_hash(dry_state, repo_key)
-            diff, truncated, commit_count = get_git_diff_for_path(repo_path_str, last_hash=last_hash)
-            if diff:
-                chars = len(diff)
-                truncated_chars = min(chars, 15000)
-                total_chars += truncated_chars
+            repo_key = get_repo_key(repo_path_str)
+            last_hash = get_last_hash(dry_state, repo_key) if days == 0 else None
+
+            pc = collect_project_commits(repo_path_str, repo_key, last_hash=last_hash, days=days)
+            n_commits = len(pc.commits)
+            has_uncommitted = pc.uncommitted_diff is not None
+
+            if n_commits > 0 or has_uncommitted:
                 collected += 1
-                status = ""
-                if truncated:
-                    status += " (truncated)"
-                if commit_count > 50:
-                    status += f" ({commit_count}커밋 중 50개만)"
-                elif commit_count == -1:
-                    status += " (fallback 모드)"
-                print(f"  [{p_name}] {chars:,}자 (전송: {truncated_chars:,}자){status}")
+                total_commits += n_commits
+
+                # 프로젝트별 문자 수 계산
+                proj_chars = 0
+                for c in pc.commits:
+                    chunk = format_commit_for_batch(c, p_name)
+                    proj_chars += len(chunk)
+                    simulated_batch_size += len(chunk)
+                    if simulated_batch_size > BATCH_CHAR_LIMIT:
+                        estimated_batches += 1
+                        simulated_batch_size = len(chunk)
+
+                if has_uncommitted:
+                    chunk = format_uncommitted_for_batch(pc.uncommitted_stat, pc.uncommitted_diff, p_name)
+                    proj_chars += len(chunk)
+                    simulated_batch_size += len(chunk)
+                    if simulated_batch_size > BATCH_CHAR_LIMIT:
+                        estimated_batches += 1
+                        simulated_batch_size = len(chunk)
+
+                total_chars += proj_chars
+                parts = []
+                if n_commits > 0:
+                    parts.append(f"커밋 {n_commits}개")
+                if has_uncommitted:
+                    parts.append("미커밋 변경")
+                print(f"  [{p_name}] {', '.join(parts)} — {proj_chars:,}자")
             elif Path(repo_path_str).exists():
                 print(f"  [{p_name}] 변경사항 없음")
             else:
                 print(f"  [{p_name}] 경로 없음")
 
         print("=" * 50)
-        print(f"  수집 프로젝트: {collected}/{len(target_paths)}")
-        print(f"  총 전송 크기:  {total_chars:,}자 (약 {total_chars // 4:,} 토큰)")
+        print(f"  수집 프로젝트:     {collected}/{len(target_paths)}")
+        print(f"  총 커밋 수:        {total_commits}개")
+        print(f"  총 데이터 크기:    {total_chars:,}자 (약 {total_chars // 4:,} 토큰)")
+        print(f"  예상 AI 호출 횟수: {estimated_batches}회 (배치 한도: {BATCH_CHAR_LIMIT:,}자)")
         if total_chars == 0:
-            print("  ⚠️ 오늘 변경사항이 없습니다.")
+            print("  ⚠️ 변경사항이 없습니다.")
         return
 
     # 단일 인스턴스 보호 — 위자드 및 실제 실행을 동시에 두 번 돌리지 않도록 차단
@@ -869,74 +943,9 @@ def main():
     else:
         print(f"🚀 Claw-Log 분석 시작 (Engine: {engine_label})...")
 
-    # 5. Git 데이터 수집 (선택된 프로젝트만)
-    MAX_COMMITS = 50
+    # 5. 배칭 파이프라인으로 Git 데이터 수집 + AI 요약
     target_paths = [p.strip() for p in paths_env.split(",") if p.strip()]
-    combined_diffs = ""
-
-    state = load_state()
-    pending_hashes = {}   # {repo_key: head_hash} — 요약 성공 후 저장할 해시
-    any_truncated = False
-    any_incomplete = False
-
-    for repo_path_str in target_paths:
-        repo_key = _get_repo_key(repo_path_str)
-        last_hash = get_last_hash(state, repo_key) if days == 0 else None
-
-        diff, truncated, commit_count = get_git_diff_for_path(repo_path_str, days=days, last_hash=last_hash)
-        if diff:
-            p_name = Path(repo_path_str).name
-            print(f"  [{p_name}] 데이터 수집 완료")
-            combined_diffs += f"\n--- PROJECT: {p_name} ---\n{diff[:15000]}\n"
-
-            if truncated:
-                any_truncated = True
-                print(f"  [{p_name}] diff가 15,000자를 초과하여 일부만 전송됩니다.")
-
-            # R1-#4 + R2-#5: truncation 또는 커밋 수 초과 시 상태 미업데이트
-            range_complete = (commit_count >= 0 and commit_count <= MAX_COMMITS)
-            should_advance = days == 0 and not truncated and range_complete
-
-            if should_advance:
-                head_hash = _get_latest_commit_hash(repo_path_str)
-                if head_hash:
-                    pending_hashes[repo_key] = head_hash
-            elif days == 0 and commit_count > MAX_COMMITS:
-                any_incomplete = True
-                print(f"  [{p_name}] 커밋 {commit_count}개 중 {MAX_COMMITS}개만 수집 — 추적 상태 미업데이트")
-
-        elif Path(repo_path_str).exists():
-            p_name = Path(repo_path_str).name
-            no_change_label = f"최근 {days}일 변경사항 없음" if days > 0 else "오늘 변경사항 없음"
-            print(f"  [{p_name}] {no_change_label}")
-
-    if not combined_diffs:
-        print("변경사항이 발견되지 않았습니다. (종료)")
-        return
-
-    # 요약 및 저장
-    print("AI 요약 생성 중...")
-    summary = summarizer.summarize(combined_diffs)
-
-    if summary and not summary.startswith(("Gemini 요약 생성 실패", "OpenAI 요약 생성 실패")):
-        if days > 0:
-            start_date = (datetime.date.today() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
-            end_date = datetime.date.today().strftime("%Y-%m-%d")
-            saved_file = prepend_to_log_file(summary, date_label=f"{start_date} ~ {end_date}")
-        else:
-            saved_file = prepend_to_log_file(summary)
-        print(f"\n기록 완료: {saved_file}")
-        print("\n" + "="*60 + f"\n{summary}\n" + "="*60)
-
-        # 요약 성공 후에만 커밋 추적 상태 저장
-        if pending_hashes:
-            save_state(pending_hashes)
-
-        if any_truncated or any_incomplete:
-            print("  일부 프로젝트의 추적 상태가 업데이트되지 않았습니다.")
-            print("  다음 실행 시 해당 커밋들이 다시 수집됩니다.")
-    else:
-        print(f"요약 실패: {summary}")
+    run_batched_summarization(target_paths, summarizer, days)
 
 if __name__ == "__main__":
     main()
