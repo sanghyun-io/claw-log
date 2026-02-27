@@ -13,7 +13,7 @@ except (ImportError, PackageNotFoundError):
     __version__ = "unknown"
 
 from claw_log.engine import GeminiSummarizer, OpenAISummarizer, CodexOAuthSummarizer
-from claw_log.storage import prepend_to_log_file, read_recent_logs, LOG_FILENAME
+from claw_log.storage import prepend_to_log_file, read_recent_logs, LOG_FILENAME, LOG_FILE
 from claw_log.scheduler import install_schedule, show_schedule, remove_schedule, get_schedule_summary
 from claw_log.state import load_state, save_state, get_last_hash, acquire_run_lock, release_run_lock
 from claw_log.git_collector import (
@@ -291,7 +291,7 @@ def show_status():
     print(f"  스케줄:    {schedule_info}")
 
     # 로그 파일 정보
-    log_path = Path.cwd() / "career_logs.md"
+    log_path = LOG_FILE
     if log_path.exists():
         try:
             with open(log_path, "r", encoding="utf-8") as f:
@@ -756,7 +756,7 @@ def main():
         change_engine()
         return
     if args.log_edit:
-        log_path = Path.cwd() / LOG_FILENAME
+        log_path = LOG_FILE
         if not log_path.exists():
             print("⚠️ 로그 파일이 없습니다. 먼저 'claw-log'를 실행하세요.")
             return
