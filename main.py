@@ -25,6 +25,15 @@ from claw_log.git_collector import (
 ENV_PATH = Path(os.getcwd()) / ".env"
 
 
+def safe_input(prompt, default=""):
+    """input() wrapper that handles EOFError for non-interactive environments."""
+    try:
+        return input(prompt)
+    except EOFError:
+        print(default)
+        return default
+
+
 # ── 프로젝트 탐색 & 선택 (공용 로직) ──
 
 def discover_git_repos(base_path_str, max_depth=3):
@@ -192,11 +201,11 @@ def manage_projects():
     print("\n   [1] 경로 추가 탐색 (새 경로 입력)")
     print("   [2] 기존 경로 재탐색 (선택/해제 변경)")
     print("   [3] 취소")
-    choice = input("   👉 선택 (1/2/3): ").strip()
+    choice = safe_input("   👉 선택 (1/2/3): ", "3").strip()
     
     if choice == "1":
         print("\n   추가할 경로를 입력하세요 (쉼표 구분).")
-        new_paths = input("   👉 경로: ").strip()
+        new_paths = safe_input("   👉 경로: ", "").strip()
         if not new_paths:
             print("   ⚠️ 경로가 입력되지 않았습니다.")
             return
@@ -329,7 +338,7 @@ def select_engine():
     print("   [1] Google Gemini (무료 티어 제공)")
     print("   [2] OpenAI GPT-4o-mini (API Key 방식, 종량제)")
     print("   [3] OpenAI Codex (ChatGPT 구독 OAuth 로그인)")
-    choice = input("   👉 선택 (1/2/3): ").strip()
+    choice = safe_input("   👉 선택 (1/2/3): ", "").strip()
 
     if choice == "1":
         llm_type = "gemini"
@@ -344,7 +353,7 @@ def select_engine():
         print(f"\n   ChatGPT 계정으로 브라우저 로그인을 진행합니다.")
         print("   ⚠️  ChatGPT Plus 또는 Pro 구독이 필요합니다.")
         print("   ⚠️  구독 요금제의 사용량 제한을 공유합니다.")
-        confirm = input("   👉 계속 진행할까요? (y/n): ").strip().lower()
+        confirm = safe_input("   👉 계속 진행할까요? (y/n): ", "n").strip().lower()
         if confirm != 'y':
             return None
 
@@ -359,7 +368,7 @@ def select_engine():
         print("\n   🧠 사용할 모델을 선택하세요.")
         print("   [1] GPT-5.1  — 범용 추론, 쿼터 효율적 (추천)")
         print("   [2] GPT-5.2  — 최고 성능, 쿼터 약 1.75배 소모")
-        model_choice = input("   👉 선택 (1/2, 기본=1): ").strip()
+        model_choice = safe_input("   👉 선택 (1/2, 기본=1): ", "1").strip()
         if model_choice == "2":
             codex_model = "gpt-5.2"
             print("   ✅ 모델: GPT-5.2 (output 토큰 비용 5.1 대비 1.75배)")
@@ -372,7 +381,7 @@ def select_engine():
         else:
             print("   (발급: https://platform.openai.com/api-keys)")
 
-        api_key = input("   👉 API Key: ").strip()
+        api_key = safe_input("   👉 API Key: ", "").strip()
         if not api_key:
             print("❌ API Key가 필요합니다.")
             return None
@@ -422,7 +431,7 @@ def run_wizard():
     print("   💡 직접 지정한 Git 프로젝트 → 자동 선택")
     print("   💡 하위에서 발견된 프로젝트 → 수동 선택")
     print("   (예시: /Users/kim/workspace,/Users/kim/side-project)")
-    paths_input = input("   👉 경로: ").strip()
+    paths_input = safe_input("   👉 경로: ", "").strip()
     
     selected_paths, input_paths = discover_and_select(paths_input)
     if not selected_paths:
@@ -447,7 +456,7 @@ def run_wizard():
     print("\n4️⃣  매일 자동 기록 스케줄을 등록할까요?")
     print("   실행 시각을 입력하세요 (예: 23:30, 18:00).")
     print("   등록하지 않으려면 그냥 Enter를 누르세요.")
-    schedule_time = input("   👉 시각 (HH:MM): ").strip()
+    schedule_time = safe_input("   👉 시각 (HH:MM): ", "").strip()
     
     if schedule_time:
         import re
@@ -657,6 +666,8 @@ def _save_all_summaries(summaries, days):
 
 def check_and_update():
     """PyPI에서 최신 버전을 확인하고 업데이트 여부를 사용자에게 묻습니다."""
+    if not sys.stdin.isatty():
+        return  # 비대화형 환경에서는 업데이트 확인 스킵
     import urllib.request
     import json
 
@@ -683,7 +694,7 @@ def check_and_update():
         return
 
     print()
-    confirm = input("   업데이트할까요? (y/n): ").strip().lower()
+    confirm = safe_input("   업데이트할까요? (y/n): ", "n").strip().lower()
     if confirm == "y":
         print("📦 업데이트 중...")
         result = subprocess.run(
