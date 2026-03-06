@@ -13,7 +13,7 @@ except (ImportError, PackageNotFoundError):
     __version__ = "unknown"
 
 from claw_log.engine import GeminiSummarizer, OpenAISummarizer, CodexOAuthSummarizer
-from claw_log.storage import prepend_to_log_file, read_recent_logs, LOG_FILENAME, LOG_FILE
+from claw_log.storage import prepend_to_log_file, read_recent_logs, save_log, LOG_FILENAME, LOG_FILE
 from claw_log.scheduler import install_schedule, show_schedule, remove_schedule, get_schedule_summary
 from claw_log.state import load_state, save_state, get_last_hash, acquire_run_lock, release_run_lock
 from claw_log.git_collector import (
@@ -413,6 +413,124 @@ def change_engine():
         print(f"✅ 엔진 변경 완료: {llm_type.upper()}")
 
 
+# ── Notion 설정 ──
+
+def setup_notion():
+    """Notion 연동 설정. 토큰 입력 → 페이지 검색 → 선택 → DB 생성."""
+    import questionary
+    from claw_log.notion import NotionClient, NotionAPIError
+
+    print("\n☁️  Notion 연동 설정\n")
+
+    # Step 1: 토큰 생성 안내
+    print("   📝 Notion Integration을 먼저 만들어주세요.")
+    print("      1. https://www.notion.so/my-integrations 접속")
+    print("      2. \"+ 새 Integration\" 클릭 → 이름 입력 → 생성")
+    print("      3. 생성된 Token(secret_...)을 복사\n")
+
+    # Step 2: 토큰 입력 + 검증
+    while True:
+        token = safe_input("   👉 Notion Token: ", "").strip()
+        if not token:
+            print("   ⚠️  토큰이 입력되지 않았습니다.")
+            return False
+
+        print("   🔍 토큰 검증 중...", end=" ")
+        client = NotionClient(token)
+        if client.validate_token():
+            print("✅")
+            break
+        else:
+            print("❌ 유효하지 않은 토큰입니다. 다시 입력해주세요.")
+
+    # Step 3: 연결된 페이지 검색
+    while True:
+        print("\n   🔍 접근 가능한 페이지를 검색 중...")
+        try:
+            pages = client.search_pages()
+        except NotionAPIError as e:
+            print(f"   ❌ 페이지 검색 실패: {e}")
+            return False
+
+        if pages:
+            break
+
+        print("   ⚠️  Integration에 연결된 페이지가 없습니다.")
+        print("      👉 Notion 앱에서 원하는 페이지 열기 → ⋯ → 연결 → Integration 선택")
+        retry = safe_input("      👉 연결 후 Enter를 눌러 다시 검색하세요. (q=취소): ", "q").strip()
+        if retry.lower() == "q":
+            print("   ⏭️  Notion 설정을 건너뜁니다.")
+            return False
+
+    # Step 4: 페이지 선택
+    choices = []
+    for p in pages:
+        label = f"{p['title']:<30s}  {p['url']}"
+        choices.append(questionary.Choice(title=label, value=p["id"]))
+
+    print(f"\n   🔍 {len(pages)}개 페이지 발견")
+    selected_page_id = questionary.select(
+        "   Career Logs를 저장할 페이지를 선택하세요:",
+        choices=choices,
+        instruction="(↑↓ 이동, Enter 확정)",
+    ).ask()
+
+    if not selected_page_id:
+        print("   ⚠️  선택이 취소되었습니다.")
+        return False
+
+    # Step 5: DB 생성
+    print("\n   📦 Career Logs Database 생성 중...", end=" ")
+    try:
+        db_id = client.ensure_database(selected_page_id)
+        print("✅")
+    except NotionAPIError as e:
+        print(f"❌\n   {e}")
+        if e.hint:
+            print(f"   💡 {e.hint}")
+        return False
+
+    # .env 저장
+    env_data = _read_env_data()
+    env_data["NOTION_TOKEN"] = token
+    env_data["NOTION_PAGE_ID"] = selected_page_id
+    env_data["NOTION_DB_ID"] = db_id
+    if _save_env_data(env_data):
+        print(f"\n   ✅ Notion 연동 완료!")
+        return True
+    return False
+
+
+def disconnect_notion():
+    """Notion 연동 해제 (.env에서 키 제거)."""
+    load_dotenv(ENV_PATH, override=True)
+    env_data = _read_env_data()
+    removed = False
+    for key in ("NOTION_TOKEN", "NOTION_PAGE_ID", "NOTION_DB_ID"):
+        if key in env_data:
+            del env_data[key]
+            removed = True
+    if removed:
+        _save_env_data(env_data)
+        print("✅ Notion 연동이 해제되었습니다.")
+    else:
+        print("ℹ️  Notion 연동 설정이 없습니다.")
+
+
+# ── Notion 클라이언트 초기화 (공용) ──
+
+def _init_notion():
+    """환경변수에서 Notion 설정을 읽어 클라이언트를 초기화."""
+    token = os.getenv("NOTION_TOKEN", "")
+    page_id = os.getenv("NOTION_PAGE_ID", "")
+    db_id = os.getenv("NOTION_DB_ID", "")
+    if not token:
+        return None, None, None
+    from claw_log.notion import NotionClient
+    client = NotionClient(token)
+    return client, db_id, page_id
+
+
 # ── 마법사 ──
 
 def run_wizard():
@@ -470,6 +588,16 @@ def run_wizard():
             print("   ⚠️ HH:MM 형식이 아닙니다. 스케줄 등록을 건너뜁니다.")
     else:
         print("   ⏭️  자동 기록 스케줄을 건너뜁니다.")
+
+    # 5. Notion 연동 (선택사항)
+    print("\n5️⃣  Notion 연동을 설정할까요? (선택사항)")
+    print("   [1] 설정하기")
+    print("   [2] 나중에 (건너뛰기)")
+    notion_choice = safe_input("   👉 선택 (1/2): ", "2").strip()
+    if notion_choice == "1":
+        setup_notion()
+    else:
+        print("   ⏭️  Notion 연동을 건너뜁니다.")
 
 
 # ── 배칭 파이프라인 ──
@@ -651,15 +779,43 @@ def run_batched_summarization(target_paths, summarizer, days):
 
 
 def _save_all_summaries(summaries, days):
-    """모든 배치 요약을 합쳐서 로그 파일에 1회 저장."""
+    """모든 배치 요약을 합쳐서 저장 (Notion + 로컬)."""
     combined = "\n\n".join(summaries)
     if days > 0:
         start_date = (datetime.date.today() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
         end_date = datetime.date.today().strftime("%Y-%m-%d")
-        saved_file = prepend_to_log_file(combined, date_label=f"{start_date} ~ {end_date}")
+        date_label = f"{start_date} ~ {end_date}"
     else:
-        saved_file = prepend_to_log_file(combined)
-    print(f"\n기록 완료: {saved_file}")
+        date_label = None
+
+    notion_client, notion_db_id, notion_page_id = _init_notion()
+
+    # DB ID 확보 (Notion 설정이 있는 경우)
+    if notion_client and notion_page_id and not notion_db_id:
+        try:
+            from claw_log.notion import NotionAPIError
+            notion_db_id = notion_client.ensure_database(notion_page_id)
+            # DB ID 캐싱
+            env_data = _read_env_data()
+            env_data["NOTION_DB_ID"] = notion_db_id
+            _save_env_data(env_data)
+        except Exception:
+            pass
+
+    result = save_log(
+        combined,
+        date_label=date_label,
+        notion_client=notion_client,
+        notion_db_id=notion_db_id,
+        notion_page_id=notion_page_id,
+    )
+
+    if result["notion"]:
+        print(f"\n☁️  Notion 저장 완료: {result['notion_url']}")
+    if result["local"]:
+        print(f"💾 로컬 저장 완료: {result['local_path']}")
+    if result.get("error"):
+        print(f"⚠️  {result['error']}")
 
 
 # ── 업데이트 확인 ──
@@ -750,6 +906,8 @@ def main():
     parser.add_argument("--serve", nargs="?", const=8080, type=int, metavar="PORT", help="로컬 웹 대시보드 (기본 포트: 8080)")
     parser.add_argument("--log-edit", action="store_true", help="커리어 로그 파일을 기본 편집기로 열기")
     parser.add_argument("--update", action="store_true", help="최신 버전 확인 및 업데이트")
+    parser.add_argument("--notion-setup", action="store_true", help="Notion 연동 설정")
+    parser.add_argument("--notion-disconnect", action="store_true", help="Notion 연동 해제")
     args = parser.parse_args()
 
     # 0. 즉시 실행 명령어 (설정 불필요)
@@ -765,6 +923,13 @@ def main():
         return
     if args.engine:
         change_engine()
+        return
+    if args.notion_setup:
+        load_dotenv(ENV_PATH, override=True)
+        setup_notion()
+        return
+    if args.notion_disconnect:
+        disconnect_notion()
         return
     if args.log_edit:
         log_path = LOG_FILE

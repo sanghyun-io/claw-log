@@ -7,6 +7,50 @@ LOG_FILENAME = "career_logs.md"
 LOG_FILE = Path.home() / ".claw-log" / LOG_FILENAME
 
 
+def save_log(summary: str, date_label: str = None, notion_client=None,
+             notion_db_id: str = None, notion_page_id: str = None) -> dict:
+    """통합 저장 함수. Notion 우선 + 로컬 백업.
+
+    Returns:
+        {"notion": bool, "local": bool,
+         "notion_url": str|None, "local_path": str|None,
+         "error": str|None}
+    """
+    result = {"notion": False, "local": False, "notion_url": None, "local_path": None, "error": None}
+
+    # Notion date는 항상 ISO 형식 (오늘 날짜)
+    notion_date = datetime.date.today().strftime("%Y-%m-%d")
+    display_label = date_label if date_label else notion_date
+
+    # Notion 저장 시도
+    if notion_client and notion_db_id:
+        try:
+            from claw_log.notion import md_to_notion_blocks
+            blocks = md_to_notion_blocks(summary)
+            title = f"Career Log - {display_label}"
+
+            # 중복 체크
+            existing_page_id = notion_client.find_page_by_date(notion_db_id, notion_date)
+            if existing_page_id:
+                notion_client.update_page_content(existing_page_id, blocks)
+                # 기존 페이지 URL 조회
+                result["notion_url"] = f"https://notion.so/{existing_page_id.replace('-', '')}"
+            else:
+                url = notion_client.create_page(notion_db_id, title, notion_date, blocks)
+                result["notion_url"] = url
+            result["notion"] = True
+        except Exception as e:
+            result["error"] = f"Notion 저장 실패: {e}"
+
+    # 로컬 저장 (항상 실행)
+    saved_path = prepend_to_log_file(summary, date_label=date_label)
+    if saved_path:
+        result["local"] = True
+        result["local_path"] = str(saved_path)
+
+    return result
+
+
 def read_recent_logs(n=5, filename=LOG_FILENAME):
     """최근 N개의 로그 엔트리를 반환합니다. 각 엔트리는 '## 📅' 헤더로 구분."""
     file_path = LOG_FILE
