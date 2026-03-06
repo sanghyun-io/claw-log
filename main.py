@@ -423,10 +423,11 @@ def setup_notion():
     print("\n☁️  Notion 연동 설정\n")
 
     # Step 1: 토큰 생성 안내
-    print("   📝 Notion Integration을 먼저 만들어주세요.")
-    print("      1. https://www.notion.so/my-integrations 접속")
-    print("      2. \"+ 새 Integration\" 클릭 → 이름 입력 → 생성")
-    print("      3. 생성된 Token(secret_...)을 복사\n")
+    print("   📝 Notion Internal Integration Token을 준비해주세요.")
+    print("      1. https://www.notion.so/profile/integrations/internal 접속")
+    print("      2. 'Create a new integration' 클릭")
+    print("      3. 이름 입력 → 워크스페이스 선택 → Create 클릭")
+    print("      4. 생성된 Integration 선택 → 'Internal Integration Token' (secret_...) 복사\n")
 
     # Step 2: 토큰 입력 + 검증
     while True:
