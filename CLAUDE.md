@@ -86,6 +86,7 @@ main.py (CLI 진입점, 위자드, Git diff 수집)
 - **Git diff 수집**: `main.py`의 `get_git_diff_for_path(days=0)`에서 당일(또는 N일치) 커밋 + 미커밋 변경사항을 합산, lock 파일/빌드 산출물 제외. per-project 15,000자 truncation
 - **엔진 선택 분리**: `select_engine()`을 `run_wizard()`에서 추출하여 `--engine`과 위자드 양쪽에서 재사용
 - **로그 파싱**: `storage.py`의 `read_recent_logs()`는 `## 📅` 날짜 헤더 패턴으로 엔트리 경계 분할 (`---` 구분자가 엔트리 내부에도 있으므로 naive split 불가)
+- **Notion 중복 체크**: `storage.py:save_log()`에서 title 기반(`find_page_by_name`) 검색으로 `--days` 범위별 고유 Notion 페이지 생성. 같은 범위 재실행 시 기존 페이지 업데이트
 - **OAuth**: `oauth.py`에서 PKCE 플로우 구현, 토큰은 `~/.claw-log/oauth_tokens.json`에 저장
 
 ## Configuration
