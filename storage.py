@@ -51,6 +51,60 @@ def save_log(summary: str, date_label: str = None, notion_client=None,
     return result
 
 
+def parse_all_log_entries(filename=LOG_FILENAME) -> tuple:
+    """전체 로그 파일을 파싱하여 date별 엔트리 목록을 반환.
+
+    Returns:
+        (entries, error) — entries는 {"date": str, "label": str, "content": str} 리스트.
+        날짜 범위(YYYY-MM-DD ~ YYYY-MM-DD)는 마지막 날짜를 Notion date로 사용.
+    """
+    file_path = LOG_FILE
+
+    if not file_path.exists():
+        return [], "로그 파일이 없습니다. 먼저 'claw-log'를 실행하세요."
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except Exception as e:
+        return [], f"로그 파일 읽기 실패: {e}"
+
+    if not content.strip():
+        return [], "로그 파일이 비어있습니다."
+
+    parts = re.split(r"(?=^## 📅 )", content, flags=re.MULTILINE)
+    entries = []
+
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+
+        lines = part.split("\n", 1)
+        header_match = re.match(r"^## 📅 (.+)$", lines[0].strip())
+        if not header_match:
+            continue
+
+        label = header_match.group(1).strip()
+
+        range_match = re.match(r"(\d{4}-\d{2}-\d{2})\s*~\s*(\d{4}-\d{2}-\d{2})", label)
+        if range_match:
+            date = range_match.group(2)
+        else:
+            single_match = re.match(r"(\d{4}-\d{2}-\d{2})", label)
+            date = single_match.group(1) if single_match else None
+
+        if not date:
+            continue
+
+        body = lines[1].strip() if len(lines) > 1 else ""
+        body = re.sub(r"\n---\s*$", "", body).rstrip()
+
+        entries.append({"date": date, "label": label, "content": body})
+
+    return entries, None
+
+
 def read_recent_logs(n=5, filename=LOG_FILENAME):
     """최근 N개의 로그 엔트리를 반환합니다. 각 엔트리는 '## 📅' 헤더로 구분."""
     file_path = LOG_FILE

@@ -187,6 +187,19 @@ class NotionClient:
             return results[0]["id"]
         return None
 
+    def find_page_by_name(self, data_source_id: str, title: str) -> str | None:
+        """Name(title) 프로퍼티로 페이지 조회 — 마이그레이션 시 엔트리 단위 중복 방지."""
+        result = self._request("POST", f"/data_sources/{data_source_id}/query", {
+            "filter": {
+                "property": "Name",
+                "title": {"equals": title},
+            },
+        })
+        results = result.get("results", [])
+        if results:
+            return results[0]["id"]
+        return None
+
     def create_page(self, data_source_id: str, title: str, date_str: str, blocks: list) -> str:
         """Database에 새 페이지 생성. 반환: page URL."""
         # Notion API는 children을 최대 100개까지만 허용

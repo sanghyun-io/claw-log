@@ -4,7 +4,7 @@ import argparse
 import subprocess
 import datetime
 from pathlib import Path
-from dotenv import load_dotenv
+from dotenv import load_dotenv, set_key as dotenv_set_key
 
 try:
     from importlib.metadata import version as _pkg_version, PackageNotFoundError
@@ -13,7 +13,7 @@ except (ImportError, PackageNotFoundError):
     __version__ = "unknown"
 
 from claw_log.engine import GeminiSummarizer, OpenAISummarizer, CodexOAuthSummarizer
-from claw_log.storage import prepend_to_log_file, read_recent_logs, save_log, LOG_FILENAME, LOG_FILE
+from claw_log.storage import prepend_to_log_file, read_recent_logs, save_log, parse_all_log_entries, LOG_FILENAME, LOG_FILE
 from claw_log.scheduler import install_schedule, show_schedule, remove_schedule, get_schedule_summary
 from claw_log.state import load_state, save_state, get_last_hash, acquire_run_lock, release_run_lock
 from claw_log.git_collector import (
@@ -519,6 +519,89 @@ def disconnect_notion():
         print("ℹ️  Notion 연동 설정이 없습니다.")
 
 
+def migrate_to_notion(overwrite=False):
+    """career_logs.md의 모든 엔트리를 Notion으로 마이그레이션."""
+    load_dotenv(ENV_PATH, override=True)
+    from claw_log.notion import NotionAPIError, md_to_notion_blocks
+
+    notion_client, notion_db_id, notion_ds_id, notion_page_id = _init_notion()
+    if not notion_client:
+        print("❌ Notion 연동이 설정되지 않았습니다.")
+        print("   👉 'claw-log --notion-setup' 으로 Notion을 연동해주세요.")
+        return
+
+    if not notion_ds_id and notion_page_id:
+        try:
+            notion_db_id, notion_ds_id = notion_client.ensure_database(
+                notion_page_id, database_id=notion_db_id
+            )
+            dotenv_set_key(ENV_PATH, "NOTION_DB_ID", notion_db_id)
+            dotenv_set_key(ENV_PATH, "NOTION_DS_ID", notion_ds_id)
+        except NotionAPIError as e:
+            print(f"❌ Notion Database 접근 실패: {e}")
+            if e.hint:
+                print(f"   💡 {e.hint}")
+            return
+
+    if not notion_ds_id:
+        print("❌ Notion Database가 설정되지 않았습니다.")
+        print("   👉 'claw-log --notion-setup' 으로 다시 설정해주세요.")
+        return
+
+    entries, error = parse_all_log_entries()
+    if error:
+        print(f"❌ {error}")
+        return
+
+    if not entries:
+        print("⚠️ 마이그레이션할 로그 엔트리가 없습니다.")
+        return
+
+    total = len(entries)
+    print(f"\n☁️  Notion 마이그레이션 시작 — 총 {total}개 엔트리")
+    print(f"   모드: {'덮어쓰기' if overwrite else '스킵 (이미 있는 날짜)'}")
+    print("=" * 50)
+
+    success = 0
+    skipped = 0
+    failed = 0
+
+    for idx, entry in enumerate(entries, 1):
+        date = entry["date"]
+        label = entry["label"]
+        content = entry["content"]
+
+        print(f"  [{idx}/{total}] {label}... ", end="", flush=True)
+
+        try:
+            blocks = md_to_notion_blocks(content)
+            title = f"Career Log - {label}"
+            existing_page_id = notion_client.find_page_by_name(notion_ds_id, title)
+            if existing_page_id:
+                if overwrite:
+                    notion_client.update_page_content(existing_page_id, blocks)
+                    print("✅ 덮어쓰기")
+                    success += 1
+                else:
+                    print("⏭️ 스킵 (이미 존재)")
+                    skipped += 1
+            else:
+                notion_client.create_page(notion_ds_id, title, date, blocks)
+                print("✅ 업로드")
+                success += 1
+        except NotionAPIError as e:
+            print(f"❌ 실패: {e}")
+            failed += 1
+
+    print("=" * 50)
+    print(f"\n📊 마이그레이션 완료")
+    print(f"   ✅ 성공: {success}개")
+    if skipped:
+        print(f"   ⏭️ 스킵:  {skipped}개 (이미 존재)")
+    if failed:
+        print(f"   ❌ 실패: {failed}개")
+
+
 # ── Notion 클라이언트 초기화 (공용) ──
 
 def _init_notion():
@@ -914,6 +997,8 @@ def main():
     parser.add_argument("--update", action="store_true", help="최신 버전 확인 및 업데이트")
     parser.add_argument("--notion-setup", action="store_true", help="Notion 연동 설정")
     parser.add_argument("--notion-disconnect", action="store_true", help="Notion 연동 해제")
+    parser.add_argument("--notion-migrate", action="store_true", help="기존 career_logs.md를 Notion으로 마이그레이션")
+    parser.add_argument("--overwrite", action="store_true", help="--notion-migrate 시 이미 있는 날짜 덮어쓰기 (기본: 스킵)")
     args = parser.parse_args()
 
     # 0. 즉시 실행 명령어 (설정 불필요)
@@ -936,6 +1021,9 @@ def main():
         return
     if args.notion_disconnect:
         disconnect_notion()
+        return
+    if args.notion_migrate:
+        migrate_to_notion(overwrite=args.overwrite)
         return
     if args.log_edit:
         log_path = LOG_FILE
