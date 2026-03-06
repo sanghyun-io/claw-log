@@ -25,6 +25,7 @@
 - **인터랙티브 프로젝트 탐색**: 상위 폴더 입력 시 하위 Git 저장소를 자동 탐색하고, 체크박스 UI로 선택할 수 있습니다.
 - **통합 프로젝트 관리**: 여러 폴더에 흩어진 프로젝트 성과를 한 곳에 모아 관리합니다.
 - **기록의 자산화**: 매일 기록된 로그는 로컬에 누적됩니다. 나중에 한 번에 모아 이력서나 기술 블로그의 초안으로 활용하세요.
+- **Notion 클라우드 동기화**: Notion 연동 시 로그를 자동으로 업로드하고, 기존 로그도 `--notion-migrate`로 한 번에 마이그레이션할 수 있습니다.
 - **프라이버시 보장**: 소스코드를 외부 서버에 저장하지 않습니다. 모든 분석은 로컬 환경에서 수행됩니다.
 - **유연한 설정**: `claw-log --reset` 명령으로 언제든 프로젝트 경로나 API 설정을 변경할 수 있습니다.
 
@@ -76,6 +77,16 @@ claw-log --log-edit          # 로그 파일을 기본 편집기로 열기
 # 대시보드
 claw-log --serve             # 로컬 웹 대시보드 (기본 포트: 8080)
 claw-log --serve 3000        # 커스텀 포트로 대시보드 실행
+
+# Notion 연동
+claw-log --notion-setup      # Notion 연동 설정 (토큰 입력 → 페이지 선택 → DB 생성)
+claw-log --notion-migrate    # 기존 career_logs.md를 Notion에 일괄 업로드 (이미 있는 날짜 스킵)
+claw-log --notion-migrate --overwrite  # 이미 있는 날짜도 덮어쓰기
+claw-log --notion-disconnect # Notion 연동 해제
+
+# 업데이트
+claw-log --version           # 현재 버전 확인
+claw-log --update            # 최신 버전 확인 및 업데이트
 ```
 
 ---

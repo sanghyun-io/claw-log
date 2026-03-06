@@ -40,6 +40,16 @@ claw-log --log-edit          # 로그 파일을 기본 편집기로 열기
 claw-log --serve              # 로컬 웹 대시보드 (기본 포트: 8080)
 claw-log --serve 3000         # 커스텀 포트로 대시보드 실행
 
+# Notion 연동
+claw-log --notion-setup       # Notion 연동 설정 (토큰 입력 → 페이지 선택 → DB 생성)
+claw-log --notion-migrate     # 기존 career_logs.md를 Notion에 일괄 업로드 (이미 있는 날짜 스킵)
+claw-log --notion-migrate --overwrite  # 이미 있는 날짜도 덮어쓰기
+claw-log --notion-disconnect  # Notion 연동 해제
+
+# 업데이트
+claw-log --version            # 현재 버전 확인
+claw-log --update             # 최신 버전 확인 및 업데이트
+
 # 패키지 빌드
 python -m build
 ```
@@ -60,7 +70,9 @@ main.py (CLI 진입점, 위자드, Git diff 수집)
     │
     ├── scheduler.py (OS별 스케줄링: Windows schtasks / Unix crontab)
     │
-    ├── storage.py (career_logs.md에 결과 prepend)
+    ├── storage.py (career_logs.md에 결과 prepend / parse_all_log_entries로 전체 파싱)
+    │
+    ├── notion.py (Notion REST API 클라이언트, urllib 기반, md→Notion blocks 변환)
     │
     └── server.py (로컬 웹 대시보드: http.server 기반 읽기 전용)
 ```
@@ -83,6 +95,10 @@ main.py (CLI 진입점, 위자드, Git diff 수집)
 - `API_KEY`: API 키 또는 `__OAUTH__` (OAuth 사용 시)
 - `PROJECT_PATHS`: 쉼표 구분 프로젝트 경로
 - `CODEX_MODEL`: `gpt-5.1` | `gpt-5.2` (OAuth 전용)
+- `NOTION_TOKEN`: Notion Internal Integration Token (`secret_...`)
+- `NOTION_PAGE_ID`: 로그를 저장할 상위 Notion 페이지 ID
+- `NOTION_DB_ID`: Career Logs Database ID (자동 생성/캐싱)
+- `NOTION_DS_ID`: Notion Data Source ID (자동 생성/캐싱)
 
 ## GitHub Repository
 
