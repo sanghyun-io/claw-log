@@ -29,8 +29,8 @@ def save_log(summary: str, date_label: str = None, notion_client=None,
             blocks = md_to_notion_blocks(summary)
             title = f"Career Log - {display_label}"
 
-            # 중복 체크
-            existing_page_id = notion_client.find_page_by_date(notion_ds_id, notion_date)
+            # 중복 체크 — title 기반으로 --days 범위별 고유 페이지 식별
+            existing_page_id = notion_client.find_page_by_name(notion_ds_id, title)
             if existing_page_id:
                 notion_client.update_page_content(existing_page_id, blocks)
                 # 기존 페이지 URL 조회
@@ -41,6 +41,11 @@ def save_log(summary: str, date_label: str = None, notion_client=None,
             result["notion"] = True
         except Exception as e:
             result["error"] = f"Notion 저장 실패: {e}"
+
+    # 빈 summary 방어
+    if not summary.strip():
+        result["error"] = "AI 요약 결과가 비어있습니다."
+        return result
 
     # 로컬 저장 (항상 실행)
     saved_path = prepend_to_log_file(summary, date_label=date_label)
