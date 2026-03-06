@@ -71,9 +71,10 @@ def _collect_dashboard_data():
     # Notion
     notion_token = env_data.get("NOTION_TOKEN", "")
     notion_db_id = env_data.get("NOTION_DB_ID", "")
+    notion_ds_id = env_data.get("NOTION_DS_ID", "")
     notion_page_id = env_data.get("NOTION_PAGE_ID", "")
     notion_status = {
-        "connected": bool(notion_token and notion_db_id),
+        "connected": bool(notion_token and (notion_ds_id or notion_db_id)),
         "page_id": notion_page_id or "미설정",
     }
 

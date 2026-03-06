@@ -8,7 +8,7 @@ LOG_FILE = Path.home() / ".claw-log" / LOG_FILENAME
 
 
 def save_log(summary: str, date_label: str = None, notion_client=None,
-             notion_db_id: str = None, notion_page_id: str = None) -> dict:
+             notion_ds_id: str = None, notion_page_id: str = None) -> dict:
     """통합 저장 함수. Notion 우선 + 로컬 백업.
 
     Returns:
@@ -23,20 +23,20 @@ def save_log(summary: str, date_label: str = None, notion_client=None,
     display_label = date_label if date_label else notion_date
 
     # Notion 저장 시도
-    if notion_client and notion_db_id:
+    if notion_client and notion_ds_id:
         try:
             from claw_log.notion import md_to_notion_blocks
             blocks = md_to_notion_blocks(summary)
             title = f"Career Log - {display_label}"
 
             # 중복 체크
-            existing_page_id = notion_client.find_page_by_date(notion_db_id, notion_date)
+            existing_page_id = notion_client.find_page_by_date(notion_ds_id, notion_date)
             if existing_page_id:
                 notion_client.update_page_content(existing_page_id, blocks)
                 # 기존 페이지 URL 조회
                 result["notion_url"] = f"https://notion.so/{existing_page_id.replace('-', '')}"
             else:
-                url = notion_client.create_page(notion_db_id, title, notion_date, blocks)
+                url = notion_client.create_page(notion_ds_id, title, notion_date, blocks)
                 result["notion_url"] = url
             result["notion"] = True
         except Exception as e:
