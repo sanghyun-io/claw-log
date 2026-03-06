@@ -50,8 +50,11 @@ claw-log --notion-disconnect  # Notion 연동 해제
 claw-log --version            # 현재 버전 확인
 claw-log --update             # 최신 버전 확인 및 업데이트
 
-# 패키지 빌드
-python -m build
+# 배포 (버전 bump → 태그 push → GitHub Actions 자동 배포)
+# 1) pyproject.toml의 version 수정
+# 2) 커밋 & push
+# 3) 태그 생성 & push → publish.yml이 PyPI 업로드 + GitHub Release 자동 생성
+git tag v1.x.x && git push origin v1.x.x
 ```
 
 테스트 프레임워크와 린터는 아직 설정되어 있지 않습니다.
