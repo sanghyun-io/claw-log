@@ -68,12 +68,22 @@ def _collect_dashboard_data():
     logs = entries if entries else []
     log_error = error
 
+    # Notion
+    notion_token = env_data.get("NOTION_TOKEN", "")
+    notion_db_id = env_data.get("NOTION_DB_ID", "")
+    notion_page_id = env_data.get("NOTION_PAGE_ID", "")
+    notion_status = {
+        "connected": bool(notion_token and notion_db_id),
+        "page_id": notion_page_id or "미설정",
+    }
+
     return {
         "settings": settings,
         "projects": projects,
         "schedule": schedule,
         "logs": logs,
         "log_error": log_error,
+        "notion": notion_status,
     }
 
 
@@ -165,6 +175,7 @@ def _render_html(data):
     schedule = data["schedule"]
     logs = data["logs"]
     log_error = data.get("log_error")
+    notion = data.get("notion", {})
 
     # 프로젝트 행
     project_rows = ""
@@ -273,6 +284,8 @@ def _render_html(data):
     <span class="value">{escape(settings['engine'])}</span>
     <span class="label">API Key</span>
     <span class="value">{escape(settings['api_key'])}</span>
+    <span class="label">Notion</span>
+    <span class="value">{'<span style="color:#155724">&#x2705; 연결됨</span>' if notion.get('connected') else '<span style="color:#666">&#x26AA; 미연결 (claw-log --notion-setup)</span>'}</span>
   </div>
 </div>
 
