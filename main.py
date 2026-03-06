@@ -4,7 +4,7 @@ import argparse
 import subprocess
 import datetime
 from pathlib import Path
-from dotenv import load_dotenv
+from dotenv import load_dotenv, set_key as dotenv_set_key
 
 try:
     from importlib.metadata import version as _pkg_version, PackageNotFoundError
@@ -535,10 +535,8 @@ def migrate_to_notion(overwrite=False):
             notion_db_id, notion_ds_id = notion_client.ensure_database(
                 notion_page_id, database_id=notion_db_id
             )
-            env_data = _read_env_data()
-            env_data["NOTION_DB_ID"] = notion_db_id
-            env_data["NOTION_DS_ID"] = notion_ds_id
-            _save_env_data(env_data)
+            dotenv_set_key(ENV_PATH, "NOTION_DB_ID", notion_db_id)
+            dotenv_set_key(ENV_PATH, "NOTION_DS_ID", notion_ds_id)
         except NotionAPIError as e:
             print(f"❌ Notion Database 접근 실패: {e}")
             if e.hint:
@@ -578,7 +576,7 @@ def migrate_to_notion(overwrite=False):
         try:
             blocks = md_to_notion_blocks(content)
             title = f"Career Log - {label}"
-            existing_page_id = notion_client.find_page_by_date(notion_ds_id, date)
+            existing_page_id = notion_client.find_page_by_name(notion_ds_id, title)
             if existing_page_id:
                 if overwrite:
                     notion_client.update_page_content(existing_page_id, blocks)
