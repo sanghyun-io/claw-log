@@ -483,7 +483,7 @@ def setup_notion():
     # Step 5: DB 생성
     print("\n   📦 Career Logs Database 생성 중...", end=" ")
     try:
-        db_id = client.ensure_database(selected_page_id)
+        db_id, ds_id = client.ensure_database(selected_page_id)
         print("✅")
     except NotionAPIError as e:
         print(f"❌\n   {e}")
@@ -496,6 +496,7 @@ def setup_notion():
     env_data["NOTION_TOKEN"] = token
     env_data["NOTION_PAGE_ID"] = selected_page_id
     env_data["NOTION_DB_ID"] = db_id
+    env_data["NOTION_DS_ID"] = ds_id
     if _save_env_data(env_data):
         print(f"\n   ✅ Notion 연동 완료!")
         return True
@@ -507,7 +508,7 @@ def disconnect_notion():
     load_dotenv(ENV_PATH, override=True)
     env_data = _read_env_data()
     removed = False
-    for key in ("NOTION_TOKEN", "NOTION_PAGE_ID", "NOTION_DB_ID"):
+    for key in ("NOTION_TOKEN", "NOTION_PAGE_ID", "NOTION_DB_ID", "NOTION_DS_ID"):
         if key in env_data:
             del env_data[key]
             removed = True
@@ -525,11 +526,12 @@ def _init_notion():
     token = os.getenv("NOTION_TOKEN", "")
     page_id = os.getenv("NOTION_PAGE_ID", "")
     db_id = os.getenv("NOTION_DB_ID", "")
+    ds_id = os.getenv("NOTION_DS_ID", "")
     if not token:
-        return None, None, None
+        return None, None, None, None
     from claw_log.notion import NotionClient
     client = NotionClient(token)
-    return client, db_id, page_id
+    return client, db_id, ds_id, page_id
 
 
 # ── 마법사 ──
@@ -789,16 +791,19 @@ def _save_all_summaries(summaries, days):
     else:
         date_label = None
 
-    notion_client, notion_db_id, notion_page_id = _init_notion()
+    notion_client, notion_db_id, notion_ds_id, notion_page_id = _init_notion()
 
-    # DB ID 확보 (Notion 설정이 있는 경우)
-    if notion_client and notion_page_id and not notion_db_id:
+    # DB ID / DS ID 확보 (Notion 설정이 있는 경우)
+    if notion_client and notion_page_id and not notion_ds_id:
         try:
             from claw_log.notion import NotionAPIError
-            notion_db_id = notion_client.ensure_database(notion_page_id)
-            # DB ID 캐싱
+            notion_db_id, notion_ds_id = notion_client.ensure_database(
+                notion_page_id, database_id=notion_db_id
+            )
+            # DB ID / DS ID 캐싱
             env_data = _read_env_data()
             env_data["NOTION_DB_ID"] = notion_db_id
+            env_data["NOTION_DS_ID"] = notion_ds_id
             _save_env_data(env_data)
         except Exception:
             pass
@@ -807,7 +812,7 @@ def _save_all_summaries(summaries, days):
         combined,
         date_label=date_label,
         notion_client=notion_client,
-        notion_db_id=notion_db_id,
+        notion_ds_id=notion_ds_id,
         notion_page_id=notion_page_id,
     )
 

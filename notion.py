@@ -110,20 +110,24 @@ class NotionClient:
 
     # ── Database 관리 ──
 
-    def create_database(self, parent_page_id: str) -> str:
-        """부모 페이지 아래에 'Career Logs' Database 생성."""
+    def create_database(self, parent_page_id: str) -> tuple[str, str]:
+        """부모 페이지 아래에 'Career Logs' Database 생성. 반환: (database_id, data_source_id)."""
         result = self._request("POST", "/databases", {
             "parent": {"type": "page_id", "page_id": parent_page_id},
             "title": [{"type": "text", "text": {"content": "Career Logs"}}],
-            "properties": {
-                "Name": {"title": {}},
-                "Date": {"date": {}},
+            "initial_data_source": {
+                "properties": {
+                    "Name": {"type": "title", "title": {}},
+                    "Date": {"type": "date", "date": {}},
+                },
             },
         })
-        return result["id"]
+        database_id = result["id"]
+        data_source_id = result["data_sources"][0]["id"]
+        return database_id, data_source_id
 
-    def find_database(self, parent_page_id: str) -> str | None:
-        """부모 페이지의 자식 블록에서 기존 Career Logs DB 검색."""
+    def find_database(self, parent_page_id: str) -> tuple[str, str] | tuple[None, None]:
+        """부모 페이지의 자식 블록에서 기존 Career Logs DB 검색. 반환: (database_id, data_source_id)."""
         result = self._request("GET", f"/blocks/{parent_page_id}/children?page_size=100")
         for block in result.get("results", []):
             if block.get("type") == "child_database":
@@ -139,27 +143,40 @@ class NotionClient:
                 else:
                     db_title = str(raw_title)
                 if "Career Logs" in db_title:
-                    return block["id"]
-        return None
+                    database_id = block["id"]
+                    db_result = self._request("GET", f"/databases/{database_id}")
+                    data_sources = db_result.get("data_sources", [])
+                    if data_sources:
+                        return database_id, data_sources[0]["id"]
+                    return database_id, None
+        return None, None
 
-    def ensure_database(self, parent_page_id: str, database_id: str | None = None) -> str:
-        """database_id가 있으면 검증, 없으면 find→create 순으로 확보."""
+    def ensure_database(
+        self,
+        parent_page_id: str,
+        database_id: str | None = None,
+        data_source_id: str | None = None,
+    ) -> tuple[str, str]:
+        """(database_id, data_source_id) 쌍을 확보. 있으면 검증, 없으면 find→create."""
         if database_id:
             try:
-                self._request("GET", f"/databases/{database_id}")
-                return database_id
+                db_result = self._request("GET", f"/databases/{database_id}")
+                data_sources = db_result.get("data_sources", [])
+                ds_id = data_source_id or (data_sources[0]["id"] if data_sources else None)
+                if ds_id:
+                    return database_id, ds_id
             except NotionAPIError:
                 pass
-        found = self.find_database(parent_page_id)
-        if found:
-            return found
+        found_db_id, found_ds_id = self.find_database(parent_page_id)
+        if found_db_id and found_ds_id:
+            return found_db_id, found_ds_id
         return self.create_database(parent_page_id)
 
     # ── 페이지 CRUD ──
 
-    def find_page_by_date(self, database_id: str, date_str: str) -> str | None:
+    def find_page_by_date(self, data_source_id: str, date_str: str) -> str | None:
         """해당 날짜의 페이지가 이미 있는지 조회 (중복 방지)."""
-        result = self._request("POST", f"/databases/{database_id}/query", {
+        result = self._request("POST", f"/data_sources/{data_source_id}/query", {
             "filter": {
                 "property": "Date",
                 "date": {"equals": date_str},
@@ -170,13 +187,13 @@ class NotionClient:
             return results[0]["id"]
         return None
 
-    def create_page(self, database_id: str, title: str, date_str: str, blocks: list) -> str:
+    def create_page(self, data_source_id: str, title: str, date_str: str, blocks: list) -> str:
         """Database에 새 페이지 생성. 반환: page URL."""
         # Notion API는 children을 최대 100개까지만 허용
         first_chunk = blocks[:100]
         remaining = blocks[100:]
         result = self._request("POST", "/pages", {
-            "parent": {"database_id": database_id},
+            "parent": {"data_source_id": data_source_id},
             "properties": {
                 "Name": {"title": [{"text": {"content": title}}]},
                 "Date": {"date": {"start": date_str}},
