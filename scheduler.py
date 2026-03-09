@@ -88,7 +88,7 @@ def _build_task_xml(*, command, arguments, hour, minute):
     except AttributeError:
         pass  # Python < 3.9
 
-    return ET.tostring(root, encoding="unicode", xml_declaration=True)
+    return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="unicode")
 
 
 def _write_xml_to_temp(xml_str):
