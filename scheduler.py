@@ -88,14 +88,16 @@ def _build_task_xml(*, command, arguments, hour, minute):
     except AttributeError:
         pass  # Python < 3.9
 
-    return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="unicode")
+    return ET.tostring(root, encoding="unicode")
 
 
 def _write_xml_to_temp(xml_str):
     """XML 문자열을 임시 파일에 쓰고 파일 경로를 반환합니다."""
     fd, path = tempfile.mkstemp(suffix=".xml", prefix="clawlog_")
     try:
-        os.write(fd, xml_str.encode("utf-8"))
+        # schtasks.exe는 UTF-16 LE + BOM 형식 XML을 요구함
+        # Python의 utf-16 코덱은 BOM(\xff\xfe)을 자동으로 prepend
+        os.write(fd, xml_str.encode("utf-16"))
     finally:
         os.close(fd)
     return path
