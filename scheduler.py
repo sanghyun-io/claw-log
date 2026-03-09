@@ -63,11 +63,17 @@ def _get_win_schedule_info(schtasks_cmd="schtasks"):
     try:
         result = subprocess.run(
             [schtasks_cmd, "/Query", "/TN", WIN_TASK_NAME, "/FO", "LIST", "/V"],
-            capture_output=True, text=True
+            capture_output=True
         )
         if result.returncode != 0:
             return None
-        return result.stdout
+        # WSL에서 schtasks.exe 출력은 Windows ANSI 인코딩(cp949)일 수 있음
+        for enc in ('utf-8', 'cp949', 'euc-kr'):
+            try:
+                return result.stdout.decode(enc)
+            except UnicodeDecodeError:
+                continue
+        return result.stdout.decode('utf-8', errors='replace')
     except Exception:
         return None
 
