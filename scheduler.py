@@ -2,6 +2,9 @@ import os
 import sys
 import subprocess
 import platform
+import tempfile
+import xml.etree.ElementTree as ET
+from datetime import date
 from pathlib import Path
 
 SCHEDULER_LOG = "scheduler.log"
@@ -38,6 +41,64 @@ def _get_platform():
     if _is_wsl():
         return "wsl"
     return "unix"
+
+
+def _build_task_xml(*, command, arguments, hour, minute):
+    """Windows Task Scheduler XML을 생성하여 문자열로 반환합니다."""
+    NS = "http://schemas.microsoft.com/windows/2004/02/mit/task"
+    ET.register_namespace("", NS)
+
+    root = ET.Element(f"{{{NS}}}Task", version="1.2")
+
+    reg = ET.SubElement(root, f"{{{NS}}}RegistrationInfo")
+    ET.SubElement(reg, f"{{{NS}}}Description").text = "Claw-Log Daily Career Logger"
+
+    triggers = ET.SubElement(root, f"{{{NS}}}Triggers")
+    cal = ET.SubElement(triggers, f"{{{NS}}}CalendarTrigger")
+    ET.SubElement(cal, f"{{{NS}}}StartBoundary").text = f"{date.today().isoformat()}T{hour}:{minute}:00"
+    ET.SubElement(cal, f"{{{NS}}}Enabled").text = "true"
+    sbd = ET.SubElement(cal, f"{{{NS}}}ScheduleByDay")
+    ET.SubElement(sbd, f"{{{NS}}}DaysInterval").text = "1"
+
+    principals = ET.SubElement(root, f"{{{NS}}}Principals")
+    principal = ET.SubElement(principals, f"{{{NS}}}Principal", id="Author")
+    ET.SubElement(principal, f"{{{NS}}}LogonType").text = "InteractiveToken"
+    ET.SubElement(principal, f"{{{NS}}}RunLevel").text = "LeastPrivilege"
+
+    settings = ET.SubElement(root, f"{{{NS}}}Settings")
+    ET.SubElement(settings, f"{{{NS}}}DisallowStartIfOnBatteries").text = "false"
+    ET.SubElement(settings, f"{{{NS}}}StopIfGoingOnBatteries").text = "false"
+    ET.SubElement(settings, f"{{{NS}}}StartWhenAvailable").text = "true"
+    ET.SubElement(settings, f"{{{NS}}}WakeToRun").text = "false"
+    ET.SubElement(settings, f"{{{NS}}}AllowStartOnDemand").text = "true"
+    ET.SubElement(settings, f"{{{NS}}}AllowHardTerminate").text = "true"
+    ET.SubElement(settings, f"{{{NS}}}ExecutionTimeLimit").text = "PT1H"
+    ET.SubElement(settings, f"{{{NS}}}MultipleInstancesPolicy").text = "IgnoreNew"
+    ET.SubElement(settings, f"{{{NS}}}Enabled").text = "true"
+    ET.SubElement(settings, f"{{{NS}}}Hidden").text = "false"
+    ET.SubElement(settings, f"{{{NS}}}RunOnlyIfNetworkAvailable").text = "false"
+
+    actions = ET.SubElement(root, f"{{{NS}}}Actions", Context="Author")
+    exec_el = ET.SubElement(actions, f"{{{NS}}}Exec")
+    ET.SubElement(exec_el, f"{{{NS}}}Command").text = command
+    ET.SubElement(exec_el, f"{{{NS}}}Arguments").text = arguments
+
+    try:
+        ET.indent(root)
+    except AttributeError:
+        pass  # Python < 3.9
+
+    return ET.tostring(root, encoding="unicode", xml_declaration=True)
+
+
+def _write_xml_to_temp(xml_str):
+    """XML 문자열을 임시 파일에 쓰고 파일 경로를 반환합니다."""
+    fd, path = tempfile.mkstemp(suffix=".xml", prefix="clawlog_")
+    try:
+        os.write(fd, xml_str.encode("utf-8"))
+    finally:
+        os.close(fd)
+    return path
 
 
 def _get_cron_info():
@@ -212,35 +273,42 @@ def install_schedule(schedule_time="23:30"):
     print(f"   - 로그 파일: {log_file_path}")
 
     if pf == "windows":
-        cmd_str = f'cd /d "{cwd}" && set PYTHONIOENCODING=utf-8 && "{python_executable}" -m claw_log.main >> "{log_file_path}" 2>&1'
-        win_cmd = f'cmd /c "{cmd_str}"'
+        arguments = f'/c cd /d "{cwd}" && set PYTHONIOENCODING=utf-8 && "{python_executable}" -m claw_log.main >> "{log_file_path}" 2>&1'
+        xml_str = _build_task_xml(command="cmd.exe", arguments=arguments, hour=hour, minute=minute)
+        xml_path = _write_xml_to_temp(xml_str)
         try:
-            subprocess.run([
-                "schtasks", "/Create", "/SC", "DAILY", "/TN", WIN_TASK_NAME,
-                "/TR", win_cmd, "/ST", f"{hour}:{minute}", "/F"
-            ], check=True)
+            subprocess.run(
+                ["schtasks", "/Create", "/XML", xml_path, "/TN", WIN_TASK_NAME, "/F"],
+                check=True
+            )
             print(f"✅ Windows 작업 스케줄러에 '{WIN_TASK_NAME}' 등록 완료!")
         except subprocess.CalledProcessError as e:
             print(f"❌ Windows 스케줄러 등록 실패: {e}")
         except FileNotFoundError:
             print("❌ schtasks를 찾을 수 없습니다.")
+        finally:
+            os.unlink(xml_path)
     elif pf == "wsl":
         bash_cmd = f"cd '{cwd}' && '{python_executable}' -m claw_log.main >> '{log_file_path}' 2>&1"
         distro = _get_wsl_distro_name()
-        if distro:
-            wsl_cmd = f'wsl.exe -d {distro} -- bash -c "{bash_cmd}"'
-        else:
-            wsl_cmd = f'wsl.exe -- bash -c "{bash_cmd}"'
+        arguments = f'-d {distro} -- bash -c "{bash_cmd}"' if distro else f'-- bash -c "{bash_cmd}"'
+        xml_str = _build_task_xml(command="wsl.exe", arguments=arguments, hour=hour, minute=minute)
+        xml_path = _write_xml_to_temp(xml_str)
         try:
-            subprocess.run([
-                "schtasks.exe", "/Create", "/SC", "DAILY", "/TN", WIN_TASK_NAME,
-                "/TR", wsl_cmd, "/ST", f"{hour}:{minute}", "/F"
-            ], check=True)
+            win_xml_path = subprocess.run(
+                ["wslpath", "-w", xml_path], capture_output=True, text=True, check=True
+            ).stdout.strip()
+            subprocess.run(
+                ["schtasks.exe", "/Create", "/XML", win_xml_path, "/TN", WIN_TASK_NAME, "/F"],
+                check=True
+            )
             print(f"✅ Windows 작업 스케줄러에 '{WIN_TASK_NAME}' 등록 완료! (WSL via wsl.exe)")
         except subprocess.CalledProcessError as e:
             print(f"❌ Windows 스케줄러 등록 실패: {e}")
         except FileNotFoundError:
             print("❌ schtasks.exe를 찾을 수 없습니다. WSL interop 비활성화 가능성이 있습니다.")
+        finally:
+            os.unlink(xml_path)
     else:
         cmd_str = f"cd '{cwd}' && '{python_executable}' -m claw_log.main >> '{log_file_path}' 2>&1"
         cron_job = f"{minute} {hour} * * * {cmd_str}"
