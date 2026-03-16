@@ -64,6 +64,49 @@ def get_last_hash(state, repo_key):
     return entry["last_commit_hash"] if entry else None
 
 
+def save_failure_since(date_str):
+    """AI 요약 실패 시작 날짜를 state에 기록 (이미 있으면 덮어쓰지 않음).
+
+    Args:
+        date_str: 실패 시작 날짜 (YYYY-MM-DD)
+    """
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    current = load_state()
+    if "failure_since" not in current:
+        current["failure_since"] = date_str
+        tmp_path = STATE_FILE.with_suffix(".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(current, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(str(tmp_path), str(STATE_FILE))
+
+
+def get_failure_since(state):
+    """state에서 failure_since 날짜 반환. 없으면 None.
+
+    Args:
+        state: load_state()로 로드한 state dict
+    Returns:
+        str | None — 실패 시작 날짜 (YYYY-MM-DD) 또는 None
+    """
+    return state.get("failure_since")
+
+
+def clear_failure_since():
+    """state에서 failure_since를 제거 (복구 완료 후 호출)."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    current = load_state()
+    if "failure_since" in current:
+        del current["failure_since"]
+        tmp_path = STATE_FILE.with_suffix(".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(current, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(str(tmp_path), str(STATE_FILE))
+
+
 def acquire_run_lock():
     """단일 인스턴스 보장. 이미 실행 중이면 에러 메시지 반환, 성공 시 None 반환."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
