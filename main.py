@@ -942,6 +942,14 @@ def check_and_update():
     confirm = safe_input("   업데이트할까요? (y/n): ", "n").strip().lower()
     if confirm == "y":
         print("📦 업데이트 중...")
+        if sys.platform == "win32":
+            # Windows에서는 실행 중인 .exe를 pip이 교체할 수 없으므로 (WinError 32)
+            # 새 터미널에서 직접 실행하도록 안내
+            print("⚠️  Windows에서는 실행 중인 프로세스를 자동 업데이트할 수 없습니다.")
+            print("   새 터미널(cmd/PowerShell)을 열고 아래 명령어를 실행해주세요:")
+            print()
+            print("   pip install --upgrade claw-log-sh")
+            return
         result = subprocess.run(
             [sys.executable, "-m", "pip", "install", "--upgrade", "claw-log-sh"]
         )
