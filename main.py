@@ -13,9 +13,15 @@ except (ImportError, PackageNotFoundError):
     __version__ = "unknown"
 
 from claw_log.engine import GeminiSummarizer, OpenAISummarizer, CodexOAuthSummarizer
-from claw_log.storage import prepend_to_log_file, read_recent_logs, save_log, parse_all_log_entries, LOG_FILENAME, LOG_FILE
+from claw_log.storage import (
+    prepend_to_log_file, read_recent_logs, save_log, parse_all_log_entries,
+    LOG_FILENAME, LOG_FILE, remove_error_log_entries,
+)
 from claw_log.scheduler import install_schedule, show_schedule, remove_schedule, get_schedule_summary
-from claw_log.state import load_state, save_state, get_last_hash, acquire_run_lock, release_run_lock
+from claw_log.state import (
+    load_state, save_state, get_last_hash, acquire_run_lock, release_run_lock,
+    save_failure_since, get_failure_since, clear_failure_since,
+)
 from claw_log.git_collector import (
     get_repo_key, get_latest_commit_hash, collect_project_commits,
     CommitData, ProjectCommits, PER_COMMIT_DIFF_LIMIT,
@@ -752,6 +758,10 @@ def _flush_batch(batch_text, batch_commits, summarizer, days, batch_idx):
     )
     if not summary or any(p in summary for p in _ERROR_PREFIXES):
         print(f"  {batch_label} 요약 실패: {summary}")
+        # days==0 모드에서만 실패 시작 날짜 추적 (--days N은 수동 실행이므로 제외)
+        if days == 0:
+            today_str = datetime.date.today().strftime("%Y-%m-%d")
+            save_failure_since(today_str)
         return (False, "")
 
     # 점진적 상태 저장 (days==0일 때만)
@@ -777,6 +787,7 @@ def run_batched_summarization(target_paths, summarizer, days):
         성공 시 True, 실패 시 False
     """
     state = load_state()
+    failure_since = get_failure_since(state) if days == 0 else None
 
     # 1. 모든 프로젝트의 커밋 데이터 수집
     all_projects = []
@@ -861,17 +872,36 @@ def run_batched_summarization(target_paths, summarizer, days):
 
     # 3. 모든 요약을 합쳐서 로그에 저장
     if all_summaries:
-        _save_all_summaries(all_summaries, days)
+        # 누락 기간 복구: failure_since가 있으면 날짜 범위 라벨 생성
+        date_label_override = None
+        if failure_since:
+            today_str = datetime.date.today().strftime("%Y-%m-%d")
+            if failure_since != today_str:
+                date_label_override = f"{failure_since} ~ {today_str}"
+            # 기존 에러 엔트리 제거 및 failure_since 초기화
+            removed = remove_error_log_entries()
+            if removed > 0:
+                print(f"  🗑️  에러 로그 {removed}개 정리 완료")
+            clear_failure_since()
+
+        _save_all_summaries(all_summaries, days, date_label_override=date_label_override)
         combined = "\n\n".join(all_summaries)
         print(f"\n" + "=" * 60 + f"\n{combined}\n" + "=" * 60)
 
     return True
 
 
-def _save_all_summaries(summaries, days):
-    """모든 배치 요약을 합쳐서 저장 (Notion + 로컬)."""
+def _save_all_summaries(summaries, days, date_label_override=None):
+    """모든 배치 요약을 합쳐서 저장 (Notion + 로컬).
+
+    Args:
+        date_label_override: 에러 복구 시 누락 기간을 표현하는 날짜 범위 (예: "2026-03-13 ~ 2026-03-18").
+                             지정 시 days 기반 라벨보다 우선 적용.
+    """
     combined = "\n\n".join(summaries)
-    if days > 0:
+    if date_label_override:
+        date_label = date_label_override
+    elif days > 0:
         start_date = (datetime.date.today() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
         end_date = datetime.date.today().strftime("%Y-%m-%d")
         date_label = f"{start_date} ~ {end_date}"

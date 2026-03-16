@@ -136,6 +136,52 @@ def read_recent_logs(n=5, filename=LOG_FILENAME):
     return entries[:n], None
 
 
+_ERROR_LOG_PATTERNS = (
+    "[Quota Error]", "[API Key Error]", "[OAuth Error]",
+    "[API Error]", "[Network Error]", "[Unknown Error]", "[Model Error]",
+)
+
+
+def remove_error_log_entries(filename=LOG_FILENAME):
+    """career_logs.md에서 에러 메시지만 담긴 엔트리를 제거합니다.
+
+    에러 패턴(_ERROR_LOG_PATTERNS)이 포함된 엔트리를 찾아 제거하며,
+    나머지 정상 엔트리는 유지합니다.
+
+    Returns:
+        int — 제거된 엔트리 수
+    """
+    file_path = LOG_FILE
+    if not file_path.exists():
+        return 0
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except Exception:
+        return 0
+
+    parts = re.split(r"(?=^## 📅 )", content, flags=re.MULTILINE)
+    kept = []
+    removed = 0
+    for part in parts:
+        if not part.strip():
+            continue
+        if any(p in part for p in _ERROR_LOG_PATTERNS):
+            removed += 1
+        else:
+            kept.append(part)
+
+    if removed > 0:
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write("".join(kept))
+        except Exception:
+            return 0
+
+    return removed
+
+
 def prepend_to_log_file(summary, filename=LOG_FILENAME, date_label=None):
     """
     로그 파일 최상단에 새로운 로그를 추가합니다. (최신순)
