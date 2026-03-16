@@ -12,7 +12,10 @@ try:
 except (ImportError, PackageNotFoundError):
     __version__ = "unknown"
 
-from claw_log.engine import GeminiSummarizer, OpenAISummarizer, CodexOAuthSummarizer
+from claw_log.engine import (
+    GeminiSummarizer, OpenAISummarizer, CodexOAuthSummarizer,
+    FallbackSummarizer, _ERROR_PREFIXES,
+)
 from claw_log.storage import prepend_to_log_file, read_recent_logs, save_log, parse_all_log_entries, LOG_FILENAME, LOG_FILE
 from claw_log.scheduler import install_schedule, show_schedule, remove_schedule, get_schedule_summary
 from claw_log.state import load_state, save_state, get_last_hash, acquire_run_lock, release_run_lock
@@ -258,6 +261,86 @@ def _save_env_data(env_data):
         return False
 
 
+def _engine_label(llm_type, codex_model="gpt-5.1"):
+    """엔진 표시용 레이블 반환."""
+    if llm_type == "openai-oauth":
+        return f"OPENAI-OAUTH / {codex_model}"
+    return llm_type.upper()
+
+
+def _build_single_summarizer(llm_type, api_key, codex_model="gpt-5.1"):
+    """단일 엔진 Summarizer 생성."""
+    if llm_type == "openai-oauth":
+        return CodexOAuthSummarizer(model=codex_model or "gpt-5.1")
+    elif llm_type == "openai":
+        return OpenAISummarizer(api_key)
+    else:
+        return GeminiSummarizer(api_key)
+
+
+def build_summarizer_list_from_env():
+    """환경변수에서 엔진 우선순위 목록을 읽어 (label, summarizer) 리스트 반환.
+
+    LLM_PRIORITY가 설정된 경우 다중 엔진 모드, 아니면 레거시 LLM_TYPE + API_KEY 사용.
+    """
+    codex_model = os.getenv("CODEX_MODEL", "gpt-5.1")
+    priority = os.getenv("LLM_PRIORITY", "").strip()
+
+    if not priority:
+        # 레거시: LLM_TYPE + API_KEY
+        llm_type = os.getenv("LLM_TYPE", "gemini").lower()
+        api_key = os.getenv("API_KEY", "")
+        label = _engine_label(llm_type, codex_model)
+        return [(label, _build_single_summarizer(llm_type, api_key, codex_model))]
+
+    engines = []
+    for lt in priority.split(","):
+        lt = lt.strip().lower()
+        if lt == "gemini":
+            api_key = os.getenv("GEMINI_API_KEY") or os.getenv("API_KEY", "")
+            engines.append((_engine_label(lt), GeminiSummarizer(api_key)))
+        elif lt == "openai":
+            api_key = os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY", "")
+            engines.append((_engine_label(lt), OpenAISummarizer(api_key)))
+        elif lt == "openai-oauth":
+            engines.append((_engine_label(lt, codex_model), CodexOAuthSummarizer(model=codex_model)))
+    return engines
+
+
+def _apply_engines_to_env(env_data, results):
+    """엔진 선택 결과를 env_data dict에 적용.
+
+    단일 엔진: 기존 LLM_TYPE + API_KEY 구조 유지.
+    다중 엔진: LLM_PRIORITY + 엔진별 API 키 구조 + 레거시 호환용 LLM_TYPE/API_KEY 유지.
+    """
+    for key in ("LLM_TYPE", "API_KEY", "CODEX_MODEL", "LLM_PRIORITY", "GEMINI_API_KEY", "OPENAI_API_KEY"):
+        env_data.pop(key, None)
+
+    if len(results) == 1:
+        llm_type, api_key, codex_model = results[0]
+        env_data["LLM_TYPE"] = llm_type
+        env_data["API_KEY"] = api_key
+        if codex_model:
+            env_data["CODEX_MODEL"] = codex_model
+    else:
+        priority_types = []
+        for llm_type, api_key, codex_model in results:
+            priority_types.append(llm_type)
+            if llm_type == "gemini":
+                env_data["GEMINI_API_KEY"] = api_key
+            elif llm_type == "openai":
+                env_data["OPENAI_API_KEY"] = api_key
+            elif llm_type == "openai-oauth" and codex_model:
+                env_data["CODEX_MODEL"] = codex_model
+        env_data["LLM_PRIORITY"] = ",".join(priority_types)
+        # 레거시 호환: 1순위 엔진을 LLM_TYPE / API_KEY에도 유지
+        first_type, first_key, first_model = results[0]
+        env_data["LLM_TYPE"] = first_type
+        env_data["API_KEY"] = first_key or "__OAUTH__"
+        if first_model and "CODEX_MODEL" not in env_data:
+            env_data["CODEX_MODEL"] = first_model
+
+
 def _update_env_projects(selected_paths, input_paths):
     """선택된 프로젝트 경로를 .env에 업데이트합니다."""
     load_dotenv(ENV_PATH, override=True)
@@ -276,15 +359,15 @@ def show_status():
     print("━" * 40)
 
     # 엔진 정보
-    llm_type = os.getenv("LLM_TYPE", "")
-    if not llm_type:
-        print(f"  엔진:     ⚠️ 미설정 (claw-log --reset)")
+    codex_model_st = os.getenv("CODEX_MODEL", "gpt-5.1")
+    priority_st = os.getenv("LLM_PRIORITY", "").strip()
+    if priority_st:
+        engine_labels = " → ".join(_engine_label(e.strip(), codex_model_st) for e in priority_st.split(","))
+        print(f"  엔진:     {engine_labels}")
+    elif os.getenv("LLM_TYPE", ""):
+        print(f"  엔진:     {_engine_label(os.getenv('LLM_TYPE'), codex_model_st)}")
     else:
-        engine_label = llm_type.upper()
-        if llm_type == "openai-oauth":
-            codex_model = os.getenv("CODEX_MODEL", "gpt-5.1")
-            engine_label = f"OPENAI-OAUTH / {codex_model}"
-        print(f"  엔진:     {engine_label}")
+        print(f"  엔진:     ⚠️ 미설정 (claw-log --reset)")
 
     # 프로젝트 정보
     paths_env = os.getenv("PROJECT_PATHS", "")
@@ -389,28 +472,52 @@ def select_engine():
     return llm_type, api_key, codex_model
 
 
+def select_engines():
+    """엔진을 우선순위 순으로 등록하는 UI.
+
+    Returns:
+        list of (llm_type, api_key, codex_model) 또는 None (취소 시)
+    """
+    engines = []
+    while True:
+        order = len(engines) + 1
+        ordinal = {1: "1순위", 2: "2순위", 3: "3순위"}.get(order, f"{order}순위")
+        print(f"\n   [{ordinal} 엔진]")
+        result = select_engine()
+        if result is None:
+            if not engines:
+                return None
+            break
+        engines.append(result)
+        if len(engines) >= 3:
+            break
+        add_more = safe_input("\n   폴백 엔진을 추가하시겠습니까? (y/n, 기본=n): ", "n").strip().lower()
+        if add_more != "y":
+            break
+    return engines
+
+
 def change_engine():
     """엔진/모델만 변경합니다 (프로젝트·스케줄 설정 유지)."""
     load_dotenv(ENV_PATH, override=True)
-    current = os.getenv("LLM_TYPE", "미설정").upper()
-    print(f"\n🔧 AI 엔진 변경 (현재: {current})")
+    codex_model_cur = os.getenv("CODEX_MODEL", "gpt-5.1")
+    priority_cur = os.getenv("LLM_PRIORITY", "").strip()
+    if priority_cur:
+        current_label = " → ".join(_engine_label(e.strip(), codex_model_cur) for e in priority_cur.split(","))
+    else:
+        current_label = _engine_label(os.getenv("LLM_TYPE", "미설정"), codex_model_cur)
+    print(f"\n🔧 AI 엔진 변경 (현재: {current_label})")
 
-    result = select_engine()
-    if result is None:
+    results = select_engines()
+    if results is None:
         print("❌ 엔진 변경이 취소되었습니다.")
         return
 
-    llm_type, api_key, codex_model = result
     env_data = _read_env_data()
-    env_data["LLM_TYPE"] = llm_type
-    env_data["API_KEY"] = api_key
-    if codex_model:
-        env_data["CODEX_MODEL"] = codex_model
-    elif "CODEX_MODEL" in env_data:
-        del env_data["CODEX_MODEL"]
-
+    _apply_engines_to_env(env_data, results)
     if _save_env_data(env_data):
-        print(f"✅ 엔진 변경 완료: {llm_type.upper()}")
+        labels = " → ".join(_engine_label(lt, cm or "gpt-5.1") for lt, _, cm in results)
+        print(f"✅ 엔진 변경 완료: {labels}")
 
 
 # ── Notion 설정 ──
@@ -623,11 +730,11 @@ def run_wizard():
     print("\n🔮 Claw-Log 초기 설정 마법사 (Tri-LLM Edition)\n")
 
     print("1️⃣  사용할 AI 엔진을 선택하세요.")
-    result = select_engine()
-    if result is None:
+    print("   💡 폴백 엔진을 추가하면 Quota 초과 시 자동으로 다음 엔진으로 전환됩니다.")
+    results = select_engines()
+    if results is None:
         print("❌ 설정이 취소되었습니다.")
         sys.exit(1)
-    llm_type, api_key, codex_model = result
 
     # 3. 프로젝트 경로 (토글 선택)
     print("\n3️⃣  분석할 Git 프로젝트 경로들을 입력하세요 (쉼표 구분).")
@@ -636,21 +743,21 @@ def run_wizard():
     print("   💡 하위에서 발견된 프로젝트 → 수동 선택")
     print("   (예시: /Users/kim/workspace,/Users/kim/side-project)")
     paths_input = safe_input("   👉 경로: ", "").strip()
-    
+
     selected_paths, input_paths = discover_and_select(paths_input)
     if not selected_paths:
         print("❌ 최소 1개 이상의 프로젝트를 선택해야 합니다.")
         sys.exit(1)
-    
+
     # .env 저장
     try:
+        env_data = {}
+        _apply_engines_to_env(env_data, results)
+        env_data["PROJECT_PATHS"] = ",".join(selected_paths)
+        env_data["INPUT_PATHS"] = input_paths
         with open(ENV_PATH, "w", encoding="utf-8") as f:
-            f.write(f"LLM_TYPE={llm_type}\n")
-            f.write(f"API_KEY={api_key}\n")
-            f.write(f"PROJECT_PATHS={','.join(selected_paths)}\n")
-            f.write(f"INPUT_PATHS={input_paths}\n")
-            if codex_model:
-                f.write(f"CODEX_MODEL={codex_model}\n")
+            for key, value in env_data.items():
+                f.write(f"{key}={value}\n")
         print(f"\n✅ 설정 저장 완료: {ENV_PATH.absolute()}")
     except Exception as e:
         print(f"❌ 설정 저장 실패: {e}")
@@ -746,7 +853,7 @@ def _flush_batch(batch_text, batch_commits, summarizer, days, batch_idx):
     print(f"  {batch_label} AI 요약 생성 중... ({len(batch_text):,}자)")
     summary = summarizer.summarize(batch_text)
 
-    if not summary or summary.startswith(("Gemini 요약 생성 실패", "OpenAI 요약 생성 실패")):
+    if not summary or any(p in summary for p in _ERROR_PREFIXES):
         print(f"  {batch_label} 요약 실패: {summary}")
         return (False, "")
 
@@ -1165,7 +1272,10 @@ def main():
     # 2. 환경변수 로드
     load_dotenv(ENV_PATH, override=True)
 
-    required_vars_missing = not os.getenv("API_KEY") or not os.getenv("LLM_TYPE")
+    required_vars_missing = (
+        not os.getenv("LLM_PRIORITY") and
+        (not os.getenv("API_KEY") or not os.getenv("LLM_TYPE"))
+    )
     should_run_wizard = args.reset or not ENV_PATH.exists() or required_vars_missing
 
     if should_run_wizard:
@@ -1186,27 +1296,23 @@ def main():
         return
 
     # 4. 설정 로드 및 검증
-    llm_type = os.getenv("LLM_TYPE", "gemini").lower()
     api_key = os.getenv("API_KEY")
     paths_env = os.getenv("PROJECT_PATHS", "")
 
-    if not api_key:
+    # API Key 검증 (다중 엔진 모드에서는 LLM_PRIORITY가 있으면 스킵)
+    if not api_key and not os.getenv("LLM_PRIORITY"):
         print("❌ API Key가 설정되지 않았습니다. 마법사를 완료하거나 .env 파일을 확인해주세요.")
         return
 
-    # Summarizer 초기화
-    summarizer = None
-    if llm_type == "openai-oauth":
-        codex_model = os.getenv("CODEX_MODEL", "gpt-5.1")
-        summarizer = CodexOAuthSummarizer(model=codex_model)
-    elif llm_type == "openai":
-        summarizer = OpenAISummarizer(api_key)
+    # Summarizer 초기화 (단일/다중 엔진 자동 선택)
+    engine_entries = build_summarizer_list_from_env()
+    if len(engine_entries) == 1:
+        summarizer = engine_entries[0][1]
+        engine_label = engine_entries[0][0]
     else:
-        summarizer = GeminiSummarizer(api_key)
+        summarizer = FallbackSummarizer(engine_entries)
+        engine_label = " → ".join(label for label, _ in engine_entries)
 
-    engine_label = llm_type.upper()
-    if llm_type == "openai-oauth":
-        engine_label = f"OPENAI-OAUTH / {codex_model}"
     days = args.days
     if days > 0:
         print(f"🚀 Claw-Log 분석 시작 — 과거 {days}일 (Engine: {engine_label})...")

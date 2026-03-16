@@ -203,3 +203,35 @@ class CodexOAuthSummarizer(BaseSummarizer):
             return f"❌ [Network Error] 네트워크 연결 실패:\n   {e.reason}"
         except Exception as e:
             return f"❌ [Unknown Error] Codex OAuth 요약 실패:\n   {str(e)}"
+
+
+# 엔진이 에러 시 반환하는 공통 식별자
+_ERROR_PREFIXES = (
+    "[Quota Error]", "[API Key Error]", "[OAuth Error]",
+    "[API Error]", "[Network Error]", "[Unknown Error]", "[Model Error]",
+)
+
+
+class FallbackSummarizer(BaseSummarizer):
+    """여러 엔진을 우선순위 순으로 시도하는 폴백 Summarizer.
+
+    앞 순위 엔진이 에러를 반환하면 다음 순위 엔진으로 자동 전환하며,
+    모든 엔진이 실패한 경우 마지막 에러 메시지를 반환한다.
+    """
+
+    def __init__(self, summarizers):
+        """
+        Args:
+            summarizers: list of (label: str, summarizer: BaseSummarizer) tuples
+        """
+        self.summarizers = summarizers
+
+    def summarize(self, text_data):
+        last_result = None
+        for label, summarizer in self.summarizers:
+            result = summarizer.summarize(text_data)
+            if result and not any(p in result for p in _ERROR_PREFIXES):
+                return result
+            print(f"  ⚠️  {label} 실패 → 다음 엔진으로 폴백 중...")
+            last_result = result
+        return last_result or "❌ [Unknown Error] 모든 엔진이 실패했습니다."
