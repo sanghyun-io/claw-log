@@ -746,7 +746,11 @@ def _flush_batch(batch_text, batch_commits, summarizer, days, batch_idx):
     print(f"  {batch_label} AI 요약 생성 중... ({len(batch_text):,}자)")
     summary = summarizer.summarize(batch_text)
 
-    if not summary or summary.startswith(("Gemini 요약 생성 실패", "OpenAI 요약 생성 실패")):
+    _ERROR_PREFIXES = (
+        "[Quota Error]", "[API Key Error]", "[OAuth Error]",
+        "[API Error]", "[Network Error]", "[Unknown Error]", "[Model Error]",
+    )
+    if not summary or any(p in summary for p in _ERROR_PREFIXES):
         print(f"  {batch_label} 요약 실패: {summary}")
         return (False, "")
 
