@@ -85,13 +85,16 @@ def get_latest_commit_hash(path):
 
 # ── 커밋 수집 함수 ──
 
-def list_commit_hashes(path, last_hash=None, days=0, exclude_hashes=None):
+def list_commit_hashes(path, last_hash=None, days=0, since_date=None, until_date=None,
+                       exclude_hashes=None):
     """지정된 범위의 커밋 해시 목록을 반환 (oldest-first).
 
     Args:
         path: Git 저장소 경로
         last_hash: 마지막 처리된 커밋 해시 (이후 커밋만 수집)
         days: 과거 N일치 수집 (0이면 오늘만)
+        since_date: 수집 시작 날짜 (datetime.date). 지정 시 days 기반 계산 대체.
+        until_date: 수집 종료 날짜 (datetime.date, inclusive). 지정 시 --before 추가.
         exclude_hashes: 이미 처리된 커밋 해시 set (중복 필터링)
 
     Returns:
@@ -109,10 +112,18 @@ def list_commit_hashes(path, last_hash=None, days=0, exclude_hashes=None):
         cmd.extend(["-n", "100"])
     else:
         # 날짜 기반
-        since_date = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        if days > 0:
-            since_date -= datetime.timedelta(days=days)
-        cmd.append(f"--since={since_date.isoformat()}")
+        if since_date is not None:
+            # 명시적 날짜 범위 (--from/--to)
+            since_dt = datetime.datetime.combine(since_date, datetime.time.min)
+        else:
+            since_dt = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            if days > 0:
+                since_dt -= datetime.timedelta(days=days)
+        cmd.append(f"--since={since_dt.isoformat()}")
+        if until_date is not None:
+            # git --before는 exclusive이므로 +1일 추가
+            until_exclusive = until_date + datetime.timedelta(days=1)
+            cmd.append(f"--before={until_exclusive.isoformat()}")
 
     try:
         output = subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode("utf-8").strip()
@@ -198,7 +209,8 @@ def collect_uncommitted(path):
     return (stat or None, diff or None)
 
 
-def collect_project_commits(repo_path, repo_key, last_hash=None, days=0, exclude_hashes=None):
+def collect_project_commits(repo_path, repo_key, last_hash=None, days=0,
+                            since_date=None, until_date=None, exclude_hashes=None):
     """프로젝트의 모든 커밋 데이터를 수집.
 
     Args:
@@ -206,6 +218,8 @@ def collect_project_commits(repo_path, repo_key, last_hash=None, days=0, exclude
         repo_key: 프로젝트 고유 키 (상태 추적용)
         last_hash: 마지막 처리된 커밋 해시
         days: 과거 N일치 수집 (0이면 오늘만)
+        since_date: 수집 시작 날짜 (datetime.date). 지정 시 days 기반 계산 대체.
+        until_date: 수집 종료 날짜 (datetime.date, inclusive).
         exclude_hashes: 이미 처리된 커밋 해시 set (중복 필터링)
 
     Returns:
@@ -229,7 +243,9 @@ def collect_project_commits(repo_path, repo_key, last_hash=None, days=0, exclude
         return empty
 
     # 1. 커밋 해시 목록 수집
-    hashes = list_commit_hashes(path, last_hash=last_hash, days=days, exclude_hashes=exclude_hashes)
+    hashes = list_commit_hashes(path, last_hash=last_hash, days=days,
+                                since_date=since_date, until_date=until_date,
+                                exclude_hashes=exclude_hashes)
 
     # 2. 각 커밋 데이터 수집 (stat이 비어있으면 스킵 — merge 커밋 등)
     commits = []
