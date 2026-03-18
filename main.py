@@ -881,27 +881,34 @@ def _flush_batch(batch_text, batch_commits, summarizer, days, batch_idx):
     return (True, summary)
 
 
-def run_batched_summarization(target_paths, summarizer, days):
+def run_batched_summarization(target_paths, summarizer, days,
+                              since_date=None, until_date=None,
+                              date_label_override=None):
     """배칭 파이프라인으로 모든 프로젝트를 처리.
 
     Args:
         target_paths: 프로젝트 경로 리스트
         summarizer: AI 요약 엔진
         days: --days 값
+        since_date: 수집 시작 날짜 (datetime.date). --from/--to 모드에서 사용.
+        until_date: 수집 종료 날짜 (datetime.date). --from/--to 모드에서 사용.
+        date_label_override: 저장 시 날짜 라벨 강제 지정 (예: "2026-03-01 ~ 2026-03-10").
 
     Returns:
         성공 시 True, 실패 시 False
     """
     state = load_state()
-    failure_since = get_failure_since(state) if days == 0 else None
+    failure_since = get_failure_since(state) if days == 0 and since_date is None else None
 
     # 1. 모든 프로젝트의 커밋 데이터 수집
     all_projects = []
     for repo_path_str in target_paths:
         repo_key = get_repo_key(repo_path_str)
-        last_hash = get_last_hash(state, repo_key) if days == 0 else None
+        last_hash = get_last_hash(state, repo_key) if days == 0 and since_date is None else None
         exclude_hashes = get_processed_commits(state, repo_key)
-        pc = collect_project_commits(repo_path_str, repo_key, last_hash=last_hash, days=days, exclude_hashes=exclude_hashes)
+        pc = collect_project_commits(repo_path_str, repo_key, last_hash=last_hash, days=days,
+                                     since_date=since_date, until_date=until_date,
+                                     exclude_hashes=exclude_hashes)
         all_projects.append(pc)
 
         p_name = pc.project_name
@@ -992,18 +999,18 @@ def run_batched_summarization(target_paths, summarizer, days):
     # 4. 모든 요약을 합쳐서 로그에 저장
     if all_summaries:
         # 누락 기간 복구: failure_since가 있으면 날짜 범위 라벨 생성
-        date_label_override = None
+        recovery_label = None
         if failure_since:
             today_str = datetime.date.today().strftime("%Y-%m-%d")
             if failure_since != today_str:
-                date_label_override = f"{failure_since} ~ {today_str}"
+                recovery_label = f"{failure_since} ~ {today_str}"
             # 기존 에러 엔트리 제거 및 failure_since 초기화
             removed = remove_error_log_entries()
             if removed > 0:
                 print(f"  🗑️  에러 로그 {removed}개 정리 완료")
             clear_failure_since()
 
-        _save_all_summaries(all_summaries, days, date_label_override=date_label_override)
+        _save_all_summaries(all_summaries, days, date_label_override=recovery_label or date_label_override)
         combined = "\n\n".join(all_summaries)
         print(f"\n" + "=" * 60 + f"\n{combined}\n" + "=" * 60)
 
@@ -1152,6 +1159,10 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="API 호출 없이 수집될 diff 미리보기")
     parser.add_argument("--engine", action="store_true", help="AI 엔진/모델 변경 (프로젝트·스케줄 유지)")
     parser.add_argument("--days", type=int, default=0, metavar="N", help="과거 N일치 커밋 요약 (예: --days 7)")
+    parser.add_argument("--from", dest="from_date", type=str, metavar="YYYY-MM-DD",
+                        help="수집 시작 날짜 (예: --from 2026-03-01)")
+    parser.add_argument("--to", dest="to_date", type=str, metavar="YYYY-MM-DD",
+                        help="수집 종료 날짜 (생략 시 오늘). --from과 함께 사용")
     parser.add_argument("--log", nargs="?", const=5, type=int, metavar="N", help="최근 N개 로그 조회 (기본: 5)")
     parser.add_argument("--serve", nargs="?", const=8080, type=int, metavar="PORT", help="로컬 웹 대시보드 (기본 포트: 8080)")
     parser.add_argument("--log-edit", action="store_true", help="커리어 로그 파일을 기본 편집기로 열기")
@@ -1161,6 +1172,37 @@ def main():
     parser.add_argument("--notion-migrate", action="store_true", help="기존 career_logs.md를 Notion으로 마이그레이션")
     parser.add_argument("--overwrite", action="store_true", help="--notion-migrate 시 이미 있는 날짜 덮어쓰기 (기본: 스킵)")
     args = parser.parse_args()
+
+    # --from/--to 검증 및 변환
+    from_date = None
+    to_date = None
+    if args.from_date or args.to_date:
+        if args.to_date and not args.from_date:
+            print("❌ --to는 --from과 함께 사용해야 합니다. (예: --from 2026-03-01 --to 2026-03-10)")
+            return
+        if args.days > 0:
+            print("❌ --days와 --from/--to는 동시에 사용할 수 없습니다.")
+            return
+        try:
+            from_date = datetime.date.fromisoformat(args.from_date)
+        except ValueError:
+            print(f"❌ --from 날짜 형식이 잘못되었습니다: '{args.from_date}' (YYYY-MM-DD 형식 필요)")
+            return
+        today = datetime.date.today()
+        if from_date > today:
+            print(f"❌ --from 날짜가 오늘({today})보다 미래입니다.")
+            return
+        if args.to_date:
+            try:
+                to_date = datetime.date.fromisoformat(args.to_date)
+            except ValueError:
+                print(f"❌ --to 날짜 형식이 잘못되었습니다: '{args.to_date}' (YYYY-MM-DD 형식 필요)")
+                return
+        else:
+            to_date = today
+        if from_date > to_date:
+            print(f"❌ --from({from_date})이 --to({to_date})보다 늦습니다.")
+            return
 
     # 0. 즉시 실행 명령어 (설정 불필요)
     if args.update:
@@ -1238,8 +1280,12 @@ def main():
 
         target_paths = [p.strip() for p in paths_env.split(",") if p.strip()]
         days = args.days
+        if from_date:
+            days = max((datetime.date.today() - from_date).days, 1)
         print(f"\n🔍 Claw-Log Dry Run — {len(target_paths)}개 프로젝트 스캔")
-        if days > 0:
+        if from_date:
+            print(f"   (날짜 범위 모드: {from_date} ~ {to_date})")
+        elif days > 0:
             print(f"   (과거 {days}일치 모드)")
         print("=" * 50)
 
@@ -1255,10 +1301,12 @@ def main():
         for repo_path_str in target_paths:
             p_name = Path(repo_path_str).name
             repo_key = get_repo_key(repo_path_str)
-            last_hash = get_last_hash(dry_state, repo_key) if days == 0 else None
+            last_hash = get_last_hash(dry_state, repo_key) if days == 0 and not from_date else None
             exclude_hashes = get_processed_commits(dry_state, repo_key)
 
-            pc = collect_project_commits(repo_path_str, repo_key, last_hash=last_hash, days=days, exclude_hashes=exclude_hashes)
+            pc = collect_project_commits(repo_path_str, repo_key, last_hash=last_hash, days=days,
+                                         since_date=from_date, until_date=to_date,
+                                         exclude_hashes=exclude_hashes)
             n_commits = len(pc.commits)
             has_uncommitted = pc.uncommitted_diff is not None
 
@@ -1369,14 +1417,25 @@ def main():
         engine_label = " → ".join(label for label, _ in engine_entries)
 
     days = args.days
-    if days > 0:
+    if from_date:
+        # --from/--to 모드: days를 batch mode 보장용으로 계산
+        days = max((datetime.date.today() - from_date).days, 1)
+        date_label = f"{from_date} ~ {to_date}"
+        print(f"🚀 Claw-Log 분석 시작 — {date_label} (Engine: {engine_label})...")
+    elif days > 0:
+        date_label = None
         print(f"🚀 Claw-Log 분석 시작 — 과거 {days}일 (Engine: {engine_label})...")
     else:
+        date_label = None
         print(f"🚀 Claw-Log 분석 시작 (Engine: {engine_label})...")
 
     # 5. 배칭 파이프라인으로 Git 데이터 수집 + AI 요약
     target_paths = [p.strip() for p in paths_env.split(",") if p.strip()]
-    run_batched_summarization(target_paths, summarizer, days)
+    run_batched_summarization(
+        target_paths, summarizer, days,
+        since_date=from_date, until_date=to_date,
+        date_label_override=date_label,
+    )
 
 if __name__ == "__main__":
     main()
