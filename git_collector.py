@@ -43,7 +43,7 @@ class ProjectCommits:
 # ── Git 헬퍼 함수 (main.py에서 이동) ──
 
 def get_repo_key(path):
-    """repo_root + ref_name으로 고유 키 생성 (브랜치별 독립 추적)."""
+    """repo_root으로 고유 키 생성 (브랜치 무관 통합 추적)."""
     try:
         repo_root = subprocess.check_output(
             ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
@@ -51,14 +51,7 @@ def get_repo_key(path):
         ).decode("utf-8").strip()
     except subprocess.CalledProcessError:
         repo_root = str(Path(path).resolve())
-    try:
-        ref_name = subprocess.check_output(
-            ["git", "-C", str(path), "symbolic-ref", "HEAD"],
-            stderr=subprocess.STDOUT
-        ).decode("utf-8").strip()
-    except subprocess.CalledProcessError:
-        ref_name = "detached"
-    return f"{repo_root}::{ref_name}"
+    return repo_root
 
 
 def is_valid_ancestor(path, commit_hash):
@@ -92,13 +85,14 @@ def get_latest_commit_hash(path):
 
 # ── 커밋 수집 함수 ──
 
-def list_commit_hashes(path, last_hash=None, days=0):
+def list_commit_hashes(path, last_hash=None, days=0, exclude_hashes=None):
     """지정된 범위의 커밋 해시 목록을 반환 (oldest-first).
 
     Args:
         path: Git 저장소 경로
         last_hash: 마지막 처리된 커밋 해시 (이후 커밋만 수집)
         days: 과거 N일치 수집 (0이면 오늘만)
+        exclude_hashes: 이미 처리된 커밋 해시 set (중복 필터링)
 
     Returns:
         커밋 해시 리스트 (oldest-first)
@@ -124,9 +118,15 @@ def list_commit_hashes(path, last_hash=None, days=0):
         output = subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode("utf-8").strip()
         if not output:
             return []
-        return output.split("\n")
+        hashes = output.split("\n")
     except subprocess.CalledProcessError:
         return []
+
+    # 이미 처리된 커밋 필터링
+    if exclude_hashes:
+        hashes = [h for h in hashes if h not in exclude_hashes]
+
+    return hashes
 
 
 def collect_commit_data(path, commit_hash):
@@ -198,7 +198,7 @@ def collect_uncommitted(path):
     return (stat or None, diff or None)
 
 
-def collect_project_commits(repo_path, repo_key, last_hash=None, days=0):
+def collect_project_commits(repo_path, repo_key, last_hash=None, days=0, exclude_hashes=None):
     """프로젝트의 모든 커밋 데이터를 수집.
 
     Args:
@@ -206,6 +206,7 @@ def collect_project_commits(repo_path, repo_key, last_hash=None, days=0):
         repo_key: 프로젝트 고유 키 (상태 추적용)
         last_hash: 마지막 처리된 커밋 해시
         days: 과거 N일치 수집 (0이면 오늘만)
+        exclude_hashes: 이미 처리된 커밋 해시 set (중복 필터링)
 
     Returns:
         ProjectCommits 인스턴스
@@ -228,7 +229,7 @@ def collect_project_commits(repo_path, repo_key, last_hash=None, days=0):
         return empty
 
     # 1. 커밋 해시 목록 수집
-    hashes = list_commit_hashes(path, last_hash=last_hash, days=days)
+    hashes = list_commit_hashes(path, last_hash=last_hash, days=days, exclude_hashes=exclude_hashes)
 
     # 2. 각 커밋 데이터 수집 (stat이 비어있으면 스킵 — merge 커밋 등)
     commits = []

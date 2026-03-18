@@ -15,15 +15,45 @@ STATE_FILE = STATE_DIR / "commit_state.json"
 RUN_LOCK_FILE = STATE_DIR / "claw_log.pid"  # 단일 인스턴스 보호용 PID 파일
 
 
-def load_state():
-    """상태 파일을 로드. 파일 없으면 빈 구조체 반환. 손상 시 .bak 백업 + 경고."""
+def _migrate_v1_to_v2(data):
+    """v1(브랜치별 키) → v2(repo 단위 키 + processed_commits) 마이그레이션."""
+    if data.get("version", 1) >= 2:
+        return data
+
+    old_projects = data.get("projects", {})
+    new_projects = {}
+
+    for old_key, val in old_projects.items():
+        # "repo_root::refs/heads/branch" → "repo_root"
+        repo_root = old_key.split("::")[0] if "::" in old_key else old_key
+
+        existing = new_projects.get(repo_root)
+        if not existing or val.get("last_run_at", "") > existing.get("last_run_at", ""):
+            new_projects[repo_root] = val
+
+    data["version"] = 2
+    data["projects"] = new_projects
+    return data
+
+
+def load_state(migrate=True):
+    """상태 파일을 로드. 파일 없으면 빈 구조체 반환. 손상 시 .bak 백업 + 경고.
+
+    Args:
+        migrate: True이면 v1→v2 마이그레이션 시 디스크에 저장. False이면 인메모리만 변환.
+    """
     if not STATE_FILE.exists():
-        return {"version": 1, "projects": {}}
+        return {"version": 2, "projects": {}}
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, dict) or "projects" not in data:
             raise ValueError("Invalid state structure")
+        # v1 → v2 자동 마이그레이션
+        if data.get("version", 1) < 2:
+            data = _migrate_v1_to_v2(data)
+            if migrate:
+                _atomic_save(data)
         return data
     except (json.JSONDecodeError, ValueError):
         # .bak 백업 + 경고
@@ -33,35 +63,65 @@ def load_state():
             print(f"  ⚠️  상태 파일 손상 → 백업: {bak}")
         except OSError:
             pass
-        return {"version": 1, "projects": {}}
+        return {"version": 2, "projects": {}}
 
 
-def save_state(pending_hashes):
-    """pending_hashes를 상태 파일에 원자적으로 병합 저장.
-
-    Args:
-        pending_hashes: {repo_key: commit_hash} 딕셔너리 — 이번 실행에서 처리 완료된 해시
-    """
+def _atomic_save(data):
+    """상태 데이터를 파일에 원자적으로 저장."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    current = load_state()
-    now = datetime.datetime.now().isoformat()
-    for repo_key, commit_hash in pending_hashes.items():
-        current["projects"][repo_key] = {
-            "last_commit_hash": commit_hash,
-            "last_run_at": now,
-        }
     tmp_path = STATE_FILE.with_suffix(".tmp")
     with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(current, f, ensure_ascii=False, indent=2)
+        json.dump(data, f, ensure_ascii=False, indent=2)
         f.flush()
         os.fsync(f.fileno())
     os.replace(str(tmp_path), str(STATE_FILE))
 
 
+PROCESSED_COMMITS_TTL_DAYS = 90
+
+
+def save_state(pending_hashes, batch_commit_hashes=None):
+    """pending_hashes를 상태 파일에 원자적으로 병합 저장.
+
+    Args:
+        pending_hashes: {repo_key: commit_hash} 딕셔너리 — 이번 배치의 마지막 커밋 해시
+        batch_commit_hashes: {repo_key: [hash, ...]} 딕셔너리 — 이번 배치에서 처리된 모든 커밋 해시
+    """
+    current = load_state()
+    _now = datetime.datetime.now()
+    now = _now.isoformat()
+    now_date = _now.strftime("%Y-%m-%d")
+    cutoff = (_now - datetime.timedelta(days=PROCESSED_COMMITS_TTL_DAYS)).strftime("%Y-%m-%d")
+
+    for repo_key, commit_hash in pending_hashes.items():
+        proj = current["projects"].setdefault(repo_key, {})
+        proj["last_commit_hash"] = commit_hash
+        proj["last_run_at"] = now
+
+        # processed_commits 누적
+        pc = proj.setdefault("processed_commits", {})
+        if batch_commit_hashes and repo_key in batch_commit_hashes:
+            for h in batch_commit_hashes[repo_key]:
+                pc[h] = now_date
+        else:
+            pc[commit_hash] = now_date
+
+        # TTL pruning
+        proj["processed_commits"] = {h: d for h, d in pc.items() if d >= cutoff}
+
+    _atomic_save(current)
+
+
 def get_last_hash(state, repo_key):
     """repo_key에 해당하는 마지막 처리 커밋 해시 반환. 없으면 None."""
     entry = state.get("projects", {}).get(repo_key)
-    return entry["last_commit_hash"] if entry else None
+    return entry.get("last_commit_hash") if entry else None
+
+
+def get_processed_commits(state, repo_key):
+    """repo_key의 처리 완료 커밋 해시 set 반환."""
+    entry = state.get("projects", {}).get(repo_key, {})
+    return set(entry.get("processed_commits", {}).keys())
 
 
 def save_failure_since(date_str):
@@ -70,16 +130,10 @@ def save_failure_since(date_str):
     Args:
         date_str: 실패 시작 날짜 (YYYY-MM-DD)
     """
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
     current = load_state()
     if "failure_since" not in current:
         current["failure_since"] = date_str
-        tmp_path = STATE_FILE.with_suffix(".tmp")
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(current, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(str(tmp_path), str(STATE_FILE))
+        _atomic_save(current)
 
 
 def get_failure_since(state):
@@ -95,16 +149,10 @@ def get_failure_since(state):
 
 def clear_failure_since():
     """state에서 failure_since를 제거 (복구 완료 후 호출)."""
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
     current = load_state()
     if "failure_since" in current:
         del current["failure_since"]
-        tmp_path = STATE_FILE.with_suffix(".tmp")
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(current, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(str(tmp_path), str(STATE_FILE))
+        _atomic_save(current)
 
 
 def acquire_run_lock():
