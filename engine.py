@@ -41,9 +41,25 @@ SYSTEM_PROMPT = """
 ---
 """
 
+MERGE_PROMPT = """
+아래는 동일 기간의 Git 변경사항을 여러 배치로 나누어 요약한 결과입니다.
+이 배치 요약들을 하나의 통합 리포트로 병합하세요.
+
+[병합 규칙]
+1. **같은 프로젝트(`### 📂`)의 섹션을 하나로 합치세요.** 프로젝트명이 약간 다르더라도 같은 프로젝트면 통합하세요.
+2. **내용을 절대 압축하거나 재요약하지 마세요.** 각 배치의 상세 내역, Career Insight, Resume Bullet Point를 빠짐없이 유지하세요.
+3. **완전히 동일한 문장만 제거하세요.** 의미가 비슷해도 표현이 다르면 모두 유지하세요.
+4. **출력 형식은 원본과 동일하게** `### 📂 [Project Name]` 형식을 유지하세요.
+5. **프로젝트명은 폴더명/레포 이름 기준으로 통일하세요.**
+6. **분량 제한 없음**: 원본의 모든 내용을 담을 수 있도록 길이 제한을 두지 마세요.
+
+[병합 대상 배치 요약들]
+"""
+
+
 class BaseSummarizer(ABC):
     @abstractmethod
-    def summarize(self, text_data):
+    def summarize(self, text_data, system_prompt=None):
         pass
 
 class GeminiSummarizer(BaseSummarizer):
@@ -52,11 +68,13 @@ class GeminiSummarizer(BaseSummarizer):
         self.model_name = 'gemini-2.5-flash' # 최신 모델 사용
 
 
-    def summarize(self, text_data):
+    def summarize(self, text_data, system_prompt=None):
+        prompt = system_prompt or SYSTEM_PROMPT
+        data_prefix = "" if system_prompt else "[전체 개발 내역 데이터]\n"
         try:
             response = self.client.models.generate_content(
                 model=self.model_name,
-                contents=f"{SYSTEM_PROMPT}\n\n[전체 개발 내역 데이터]\n{text_data}"
+                contents=f"{prompt}\n\n{data_prefix}{text_data}"
             )
             return response.text
         except Exception as e:
@@ -85,13 +103,15 @@ class OpenAISummarizer(BaseSummarizer):
         self.client = OpenAI(api_key=api_key)
         self.model_name = "gpt-4o-mini"
 
-    def summarize(self, text_data):
+    def summarize(self, text_data, system_prompt=None):
+        prompt = system_prompt or SYSTEM_PROMPT
+        user_content = text_data if system_prompt else f"[전체 개발 내역 데이터]\n{text_data}"
         try:
             response = self.client.chat.completions.create(
                 model=self.model_name,
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": f"[전체 개발 내역 데이터]\n{text_data}"}
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": user_content}
                 ],
                 temperature=0.7
             )
@@ -123,12 +143,14 @@ class CodexOAuthSummarizer(BaseSummarizer):
         self.refresh_if_needed = refresh_if_needed
         self.model = model
 
-    def summarize(self, text_data):
+    def summarize(self, text_data, system_prompt=None):
+        prompt = system_prompt or SYSTEM_PROMPT
+        user_content = text_data if system_prompt else f"[전체 개발 내역 데이터]\n{text_data}"
         import json
         try:
             from urllib.request import Request, urlopen
             from urllib.error import HTTPError, URLError
-            
+
             # 토큰 로드 및 필요 시 갱신
             tokens = self.load_tokens()
             if not tokens:
@@ -136,16 +158,16 @@ class CodexOAuthSummarizer(BaseSummarizer):
                     "❌ [OAuth Error] 저장된 인증 정보가 없습니다.\n"
                     "   👉 'claw-log --reset' 명령어로 OAuth 로그인을 다시 진행해주세요."
                 )
-            
+
             tokens = self.refresh_if_needed(tokens)
             access_token = tokens.get("access_token", "")
-            
+
             # Codex Responses API 형식으로 요청 구성 (stream 필수)
             payload = {
                 "model": self.model,
-                "instructions": SYSTEM_PROMPT,
+                "instructions": prompt,
                 "input": [
-                    {"role": "user", "content": f"[전체 개발 내역 데이터]\n{text_data}"}
+                    {"role": "user", "content": user_content}
                 ],
                 "stream": True,
                 "store": False,
@@ -226,10 +248,10 @@ class FallbackSummarizer(BaseSummarizer):
         """
         self.summarizers = summarizers
 
-    def summarize(self, text_data):
+    def summarize(self, text_data, system_prompt=None):
         last_result = None
         for label, summarizer in self.summarizers:
-            result = summarizer.summarize(text_data)
+            result = summarizer.summarize(text_data, system_prompt=system_prompt)
             if result and not any(p in result for p in _ERROR_PREFIXES):
                 return result
             print(f"  ⚠️  {label} 실패 → 다음 엔진으로 폴백 중...")
