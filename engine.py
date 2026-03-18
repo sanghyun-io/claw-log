@@ -70,10 +70,11 @@ class GeminiSummarizer(BaseSummarizer):
 
     def summarize(self, text_data, system_prompt=None):
         prompt = system_prompt or SYSTEM_PROMPT
+        data_prefix = "" if system_prompt else "[전체 개발 내역 데이터]\n"
         try:
             response = self.client.models.generate_content(
                 model=self.model_name,
-                contents=f"{prompt}\n\n[전체 개발 내역 데이터]\n{text_data}"
+                contents=f"{prompt}\n\n{data_prefix}{text_data}"
             )
             return response.text
         except Exception as e:
@@ -104,12 +105,13 @@ class OpenAISummarizer(BaseSummarizer):
 
     def summarize(self, text_data, system_prompt=None):
         prompt = system_prompt or SYSTEM_PROMPT
+        user_content = text_data if system_prompt else f"[전체 개발 내역 데이터]\n{text_data}"
         try:
             response = self.client.chat.completions.create(
                 model=self.model_name,
                 messages=[
                     {"role": "system", "content": prompt},
-                    {"role": "user", "content": f"[전체 개발 내역 데이터]\n{text_data}"}
+                    {"role": "user", "content": user_content}
                 ],
                 temperature=0.7
             )
@@ -143,6 +145,7 @@ class CodexOAuthSummarizer(BaseSummarizer):
 
     def summarize(self, text_data, system_prompt=None):
         prompt = system_prompt or SYSTEM_PROMPT
+        user_content = text_data if system_prompt else f"[전체 개발 내역 데이터]\n{text_data}"
         import json
         try:
             from urllib.request import Request, urlopen
@@ -164,7 +167,7 @@ class CodexOAuthSummarizer(BaseSummarizer):
                 "model": self.model,
                 "instructions": prompt,
                 "input": [
-                    {"role": "user", "content": f"[전체 개발 내역 데이터]\n{text_data}"}
+                    {"role": "user", "content": user_content}
                 ],
                 "stream": True,
                 "store": False,
