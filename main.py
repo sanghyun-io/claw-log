@@ -14,7 +14,7 @@ except (ImportError, PackageNotFoundError):
 
 from claw_log.engine import (
     GeminiSummarizer, OpenAISummarizer, CodexOAuthSummarizer,
-    FallbackSummarizer, _ERROR_PREFIXES,
+    FallbackSummarizer, _ERROR_PREFIXES, MERGE_PROMPT,
 )
 from claw_log.storage import (
     prepend_to_log_file, read_recent_logs, save_log, parse_all_log_entries,
@@ -973,7 +973,19 @@ def run_batched_summarization(target_paths, summarizer, days):
             return False
         all_summaries.append(summary)
 
-    # 3. 모든 요약을 합쳐서 로그에 저장
+    # 3. 배치 > 1일 때 동일 프로젝트 섹션 통합
+    if len(all_summaries) > 1:
+        merged_input = "\n\n---\n\n".join(
+            f"[배치 #{i+1} 요약]\n{s}" for i, s in enumerate(all_summaries)
+        )
+        print(f"  📎 배치 {len(all_summaries)}개 통합 중...")
+        merged = summarizer.summarize(merged_input, system_prompt=MERGE_PROMPT)
+        if merged and not any(p in merged for p in _ERROR_PREFIXES):
+            all_summaries = [merged]
+        else:
+            print("  ⚠️  통합 실패, 배치 결과를 그대로 사용합니다")
+
+    # 4. 모든 요약을 합쳐서 로그에 저장
     if all_summaries:
         # 누락 기간 복구: failure_since가 있으면 날짜 범위 라벨 생성
         date_label_override = None
