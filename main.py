@@ -1111,11 +1111,25 @@ def check_and_update():
             print("   pip install --upgrade claw-log-sh")
             return
         result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--upgrade", "claw-log-sh"]
+            [sys.executable, "-m", "pip", "install", "--upgrade", "claw-log-sh"],
+            capture_output=True,
         )
         if result.returncode == 0:
             print("✅ 업데이트 완료! 변경 적용을 위해 다시 실행해주세요.")
+        elif b"externally-managed-environment" in result.stderr:
+            # PEP 668 환경 (Debian/Ubuntu 등) — --break-system-packages 재시도
+            result2 = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--upgrade", "claw-log-sh",
+                 "--break-system-packages"]
+            )
+            if result2.returncode == 0:
+                print("✅ 업데이트 완료! 변경 적용을 위해 다시 실행해주세요.")
+            else:
+                print("❌ 업데이트 실패. 직접 실행해주세요:")
+                print("   pip install --upgrade claw-log-sh --break-system-packages")
         else:
+            sys.stdout.buffer.write(result.stdout)
+            sys.stderr.buffer.write(result.stderr)
             print("❌ 업데이트 실패. 직접 실행해주세요:")
             print("   pip install --upgrade claw-log-sh")
     else:
