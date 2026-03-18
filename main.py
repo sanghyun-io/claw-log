@@ -1231,7 +1231,7 @@ def main():
             print(f"   (과거 {days}일치 모드)")
         print("=" * 50)
 
-        dry_state = load_state()
+        dry_state = load_state(migrate=False)
         total_chars = 0
         total_commits = 0
         collected = 0

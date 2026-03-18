@@ -36,8 +36,12 @@ def _migrate_v1_to_v2(data):
     return data
 
 
-def load_state():
-    """상태 파일을 로드. 파일 없으면 빈 구조체 반환. 손상 시 .bak 백업 + 경고."""
+def load_state(migrate=True):
+    """상태 파일을 로드. 파일 없으면 빈 구조체 반환. 손상 시 .bak 백업 + 경고.
+
+    Args:
+        migrate: True이면 v1→v2 마이그레이션 시 디스크에 저장. False이면 인메모리만 변환.
+    """
     if not STATE_FILE.exists():
         return {"version": 2, "projects": {}}
     try:
@@ -48,7 +52,8 @@ def load_state():
         # v1 → v2 자동 마이그레이션
         if data.get("version", 1) < 2:
             data = _migrate_v1_to_v2(data)
-            _atomic_save(data)
+            if migrate:
+                _atomic_save(data)
         return data
     except (json.JSONDecodeError, ValueError):
         # .bak 백업 + 경고
@@ -83,9 +88,10 @@ def save_state(pending_hashes, batch_commit_hashes=None):
         batch_commit_hashes: {repo_key: [hash, ...]} 딕셔너리 — 이번 배치에서 처리된 모든 커밋 해시
     """
     current = load_state()
-    now = datetime.datetime.now().isoformat()
-    now_date = datetime.datetime.now().strftime("%Y-%m-%d")
-    cutoff = (datetime.datetime.now() - datetime.timedelta(days=PROCESSED_COMMITS_TTL_DAYS)).strftime("%Y-%m-%d")
+    _now = datetime.datetime.now()
+    now = _now.isoformat()
+    now_date = _now.strftime("%Y-%m-%d")
+    cutoff = (_now - datetime.timedelta(days=PROCESSED_COMMITS_TTL_DAYS)).strftime("%Y-%m-%d")
 
     for repo_key, commit_hash in pending_hashes.items():
         proj = current["projects"].setdefault(repo_key, {})
