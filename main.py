@@ -22,7 +22,8 @@ from claw_log.storage import (
 )
 from claw_log.scheduler import install_schedule, show_schedule, remove_schedule, get_schedule_summary
 from claw_log.state import (
-    load_state, save_state, get_last_hash, acquire_run_lock, release_run_lock,
+    load_state, save_state, get_last_hash, get_processed_commits,
+    acquire_run_lock, release_run_lock,
     save_failure_since, get_failure_since, clear_failure_since,
 )
 from claw_log.git_collector import (
@@ -870,10 +871,12 @@ def _flush_batch(batch_text, batch_commits, summarizer, days, batch_idx):
     # 점진적 상태 저장 (days==0일 때만)
     if days == 0 and batch_commits:
         pending = {}
+        batch_hashes = {}  # {repo_key: [hash, ...]}
         for repo_key, commit_hash in batch_commits:
             pending[repo_key] = commit_hash  # 같은 repo_key의 마지막 해시가 남음
+            batch_hashes.setdefault(repo_key, []).append(commit_hash)
         if pending:
-            save_state(pending)
+            save_state(pending, batch_commit_hashes=batch_hashes)
 
     return (True, summary)
 
@@ -897,7 +900,8 @@ def run_batched_summarization(target_paths, summarizer, days):
     for repo_path_str in target_paths:
         repo_key = get_repo_key(repo_path_str)
         last_hash = get_last_hash(state, repo_key) if days == 0 else None
-        pc = collect_project_commits(repo_path_str, repo_key, last_hash=last_hash, days=days)
+        exclude_hashes = get_processed_commits(state, repo_key)
+        pc = collect_project_commits(repo_path_str, repo_key, last_hash=last_hash, days=days, exclude_hashes=exclude_hashes)
         all_projects.append(pc)
 
         p_name = pc.project_name
@@ -1240,8 +1244,9 @@ def main():
             p_name = Path(repo_path_str).name
             repo_key = get_repo_key(repo_path_str)
             last_hash = get_last_hash(dry_state, repo_key) if days == 0 else None
+            exclude_hashes = get_processed_commits(dry_state, repo_key)
 
-            pc = collect_project_commits(repo_path_str, repo_key, last_hash=last_hash, days=days)
+            pc = collect_project_commits(repo_path_str, repo_key, last_hash=last_hash, days=days, exclude_hashes=exclude_hashes)
             n_commits = len(pc.commits)
             has_uncommitted = pc.uncommitted_diff is not None
 
